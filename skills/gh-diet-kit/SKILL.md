@@ -57,7 +57,7 @@ commands:
         description: Format JSON output using a Go template
 
   - name: gh diet-kit dangling commits
-    description: List commits from squash or rebase merged PRs, commits dropped by force-pushes on PR head branches, or commits from closed unmerged PRs, that are not reachable from any normal branch or tag ref. All detection methods are enabled by default. Outputs table (default) or JSON with fields SHA, PR_NUMBER, PR_URL, SIZE (total blob size in the commit tree), MESSAGE.
+    description: List commits from squash or rebase merged PRs, commits dropped by force-pushes on PR head branches, or commits from closed unmerged PRs, that are not reachable from any normal branch or tag ref. All detection methods are enabled by default. Outputs table (default) or JSON with fields SHA, PR_NUMBER, PR_URL, SIZE (total size of unique added or modified blobs in the commit diff), MESSAGE.
     usage: gh diet-kit dangling commits [flags]
     flags:
       - name: --limit
