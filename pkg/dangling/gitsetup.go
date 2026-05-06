@@ -21,13 +21,21 @@ func cacheBaseDir() (string, error) {
 }
 
 // CacheGitDir returns the path of the bare clone cache directory for the given repo.
-// Format: <cacheBase>/<host>/<owner>/<repo>.git
-func CacheGitDir(repo repository.Repository) (string, error) {
+// The directory name encodes the clone mode to prevent a blobless cache from being
+// used when a full clone is required.
+// Format: <cacheBase>/<host>/<owner>/<repo>.git         (full clone)
+//
+//	<cacheBase>/<host>/<owner>/<repo>.blobless.git (blobless clone)
+func CacheGitDir(repo repository.Repository, blobless bool) (string, error) {
 	base, err := cacheBaseDir()
 	if err != nil {
 		return "", err
 	}
-	return filepath.Join(base, repo.Host, repo.Owner, repo.Name+".git"), nil
+	suffix := ".git"
+	if blobless {
+		suffix = ".blobless.git"
+	}
+	return filepath.Join(base, repo.Host, repo.Owner, repo.Name+suffix), nil
 }
 
 // ghCredArgs returns git global -c flags that delegate credential lookup to
@@ -46,7 +54,7 @@ func ghCredArgs() []string {
 // When blobless is false, a full clone is performed (required for blob content checks).
 // Returns the path to the bare clone directory.
 func SetupLocalGitCache(ctx context.Context, repo repository.Repository, blobless bool) (string, error) {
-	dir, err := CacheGitDir(repo)
+	dir, err := CacheGitDir(repo, blobless)
 	if err != nil {
 		return "", err
 	}
