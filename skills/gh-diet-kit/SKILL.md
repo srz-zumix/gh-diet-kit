@@ -169,7 +169,7 @@ gh diet-kit dangling blobs --format json | jq '.[] | .sha'
 
 List commits from squash or rebase merged pull requests, commits dropped by force-pushes on PR head branches, or commits from closed unmerged pull requests, that are not reachable from any normal branch or tag ref. All detection methods are enabled by default.
 
-Output fields: `SHA`, `PR_NUMBER`, `PR_URL`, `SIZE`, `MESSAGE`. `SIZE` is the total of all blob sizes in the commit tree (human-readable, e.g. `1.2 MB`).
+Output fields: `SHA`, `PR_NUMBER`, `PR_URL`, `SIZE`, `MESSAGE`. `SIZE` is the total size of unique blobs added or modified in the commit diff (human-readable, e.g. `1.2 MB`).
 
 ```sh
 # Inspect up to 200 closed PRs
