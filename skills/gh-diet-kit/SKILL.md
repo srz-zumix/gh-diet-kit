@@ -30,6 +30,13 @@ commands:
     flags:
       - name: --clear-cache
         description: Clear the per-PR and commit blob cache before running, then use cache normally (default: false)
+      - name: --clear-git-cache
+        description: Clear the git bare clone cache and re-clone before running (default: false)
+      - name: --format
+        description: Output format (json)
+      - name: --jq
+        shorthand: -q
+        description: Filter JSON output using a jq expression
       - name: --limit
         description: Maximum number of closed PRs to inspect (default: unlimited, ignored when --pr is specified)
       - name: --no-cache
@@ -38,8 +45,6 @@ commands:
         description: Disable closed unmerged PR blob detection (default: false)
       - name: --no-force-push
         description: Disable force-push dropped commit blob detection (default: false)
-      - name: --clear-git-cache
-        description: Clear the git bare clone cache and re-clone before running (default: false)
       - name: --no-squash-merge
         description: Disable squash/rebase merged PR blob detection (default: false)
       - name: --order
@@ -55,11 +60,6 @@ commands:
         description: Sort by field (size, path, pr_number)
       - name: --strict-errors
         description: Fail immediately on any API or git error instead of logging and continuing (default: false)
-      - name: --format
-        description: Output format (json)
-      - name: --jq
-        shorthand: -q
-        description: Filter JSON output using a jq expression
       - name: --template
         shorthand: -t
         description: Format JSON output using a Go template
@@ -70,6 +70,13 @@ commands:
     flags:
       - name: --clear-cache
         description: Clear the per-PR and commit blob cache before running, then use cache normally (default: false)
+      - name: --clear-git-cache
+        description: Clear the git bare clone cache and re-clone before running (default: false)
+      - name: --format
+        description: Output format (json)
+      - name: --jq
+        shorthand: -q
+        description: Filter JSON output using a jq expression
       - name: --limit
         description: Maximum number of closed PRs to inspect (default: unlimited, ignored when --pr is specified)
       - name: --no-cache
@@ -78,8 +85,6 @@ commands:
         description: Disable closed unmerged PR detection (default: false)
       - name: --no-force-push
         description: Disable force-push dropped commit detection (default: false)
-      - name: --clear-git-cache
-        description: Clear the git bare clone cache and re-clone before running (default: false)
       - name: --no-squash-merge
         description: Disable squash/rebase merged PR commit detection (default: false)
       - name: --order
@@ -95,11 +100,6 @@ commands:
         description: Sort by field (size, pr_number)
       - name: --strict-errors
         description: Fail immediately on any API or git error instead of logging and continuing (default: false)
-      - name: --format
-        description: Output format (json)
-      - name: --jq
-        shorthand: -q
-        description: Filter JSON output using a jq expression
       - name: --template
         shorthand: -t
         description: Format JSON output using a Go template

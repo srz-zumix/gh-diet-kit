@@ -19,8 +19,9 @@ type cachedBlobFile struct {
 }
 
 // cachedCommitBlob is the on-disk structure for a cached commit blob result.
-// BlobSizes is nil when the tree fetch failed during the original run; an empty
-// (non-nil) map means the tree was fetched but contained no blob entries.
+// BlobSizes is always non-nil for entries written by the current code path,
+// because save() is only called when BlobSizeMap is non-nil. An empty (non-nil)
+// map means the tree was fetched successfully but contained no blob entries.
 type cachedCommitBlob struct {
 	Message   string           `json:"message"`
 	Files     []cachedBlobFile `json:"files"`
