@@ -241,7 +241,9 @@ func fetchCommitBlobInfo(ctx context.Context, g *GitHubClient, repo repository.R
 			}
 		}
 	}
-	blobCache.save(sha, info)
+	if info.BlobSizeMap != nil {
+		blobCache.save(sha, info)
+	}
 	return info, nil
 }
 
