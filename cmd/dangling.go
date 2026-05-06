@@ -24,5 +24,6 @@ remote object store, reachable only via refs/pull/{number}/head, not via branche
 	}
 	cmd.AddCommand(danglingcmd.NewCommitsCmd())
 	cmd.AddCommand(danglingcmd.NewBlobsCmd())
+	cmd.AddCommand(danglingcmd.NewLocalCmd())
 	return cmd
 }

@@ -2,15 +2,17 @@ package dangling
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"strings"
 
 	"github.com/cli/cli/v2/pkg/cmdutil"
+	"github.com/dustin/go-humanize"
 	"github.com/spf13/cobra"
 	"github.com/srz-zumix/gh-diet-kit/internal/prs"
-	"github.com/srz-zumix/go-gh-extension/pkg/gh"
+	"github.com/srz-zumix/gh-diet-kit/pkg/dangling"
+	"github.com/srz-zumix/go-gh-extension/pkg/logger"
 	"github.com/srz-zumix/go-gh-extension/pkg/parser"
-	"github.com/srz-zumix/go-gh-extension/pkg/render"
 )
 
 // NewBlobsCmd returns the cobra.Command for the dangling blobs subcommand.
@@ -27,7 +29,8 @@ func NewBlobsCmd() *cobra.Command {
 	var noForcePushFlag bool
 	var noClosedFlag bool
 	var reachabilityCheckFlag string
-	var localDefaultBranchFlag string
+	var strictErrorsFlag bool
+	var gitDirFlag string
 	var exporter cmdutil.Exporter
 
 	cmd := &cobra.Command{
@@ -39,10 +42,6 @@ commits from closed unmerged pull requests, and are not reachable from any
 normal branch or tag ref on the remote. All detection methods are enabled by
 default.
 
-For each dangling commit the full git tree is traversed recursively; all blob
-entries are reported. Blob SHAs are deduplicated per PR but the same SHA may
-appear in output when referenced by commits in different PRs.
-
 Use --no-squash-merge to skip squash/rebase merge detection.
 Use --no-force-push to skip force-push dropped commit detection.
 Use --no-closed to skip closed unmerged PR detection.
@@ -50,20 +49,40 @@ Use --no-closed to skip closed unmerged PR detection.
 Use --pr to inspect specific pull request numbers. Without --pr, all closed PRs
 are inspected (up to --limit).
 
-Note: a blob that also exists in a current branch tree is not truly dangling at
-the object level. This command reports blobs referenced by dangling commits as
-candidates; cross-checking against current branch trees is left to the caller.
+Note: Git blobs are content-addressed. A blob introduced by a dangling commit
+may also appear in a live branch tree via identical file content (e.g.
+package-lock.json, generated files). Without a local git clone this cannot be
+detected efficiently via the GitHub API, so results may contain false positives.
+Use --reachability-check local-object (after running git fetch --all --tags)
+to filter out blobs that are still reachable from any local ref. Note:
+git fetch --all alone does not fetch tags that are not reachable from any
+branch, so commits reachable only from such tags may be misreported.
 
 Output fields: SHA, PATH, SIZE, COMMIT_SHA, PR_NUMBER, PR_URL`,
 		RunE: func(cmd *cobra.Command, args []string) error {
-			ctx := context.Background()
+			ctx := cmd.Context()
+
+			// When --repo is specified with a local reachability check, auto-setup a bare clone
+			// cache so the check can run against the correct remote repository.
+			if repoFlag != "" && reachabilityCheckFlag == string(dangling.ReachabilityCheckLocalObject) && gitDirFlag == "" {
+				repo, err := parser.Repository(parser.RepositoryInput(repoFlag))
+				if err != nil {
+					return fmt.Errorf("failed to determine repository: %w", err)
+				}
+				// full clone needed for blob content reachability
+				dir, err := dangling.SetupLocalGitCache(ctx, repo, false)
+				if err != nil {
+					return fmt.Errorf("failed to set up local git cache for --repo: %w", err)
+				}
+				gitDirFlag = dir
+			}
 
 			repo, err := parser.Repository(parser.RepositoryInput(repoFlag))
 			if err != nil {
 				return fmt.Errorf("failed to determine repository: %w", err)
 			}
 
-			g, err := gh.NewGitHubClientWithRepo(repo)
+			g, err := dangling.NewGitHubClientWithRepo(repo)
 			if err != nil {
 				return fmt.Errorf("failed to create GitHub client: %w", err)
 			}
@@ -73,39 +92,55 @@ Output fields: SHA, PATH, SIZE, COMMIT_SHA, PR_NUMBER, PR_URL`,
 				return fmt.Errorf("failed to fetch pull requests: %w", err)
 			}
 
-			opts := gh.DanglingOptions{
+			opts := dangling.DanglingOptions{
 				DisableSquashRebase: noSquashMergeFlag,
 				DisableForcePush:    noForcePushFlag,
 				DisableClosed:       noClosedFlag,
-				ReachabilityCheck:   gh.ReachabilityCheckMode(reachabilityCheckFlag),
-				LocalDefaultBranch:  localDefaultBranchFlag,
+				ReachabilityCheck:   dangling.ReachabilityCheckMode(reachabilityCheckFlag),
+				StrictErrors:        strictErrorsFlag,
+				GitDir:              gitDirFlag,
 			}
 
-			blobs, err := gh.FindDanglingBlobs(ctx, g, repo, prList, opts)
-			if err != nil {
+			logger.Info("inspecting PRs for dangling blobs", "total", len(prList))
+			blobs, err := dangling.FindDanglingBlobs(ctx, g, repo, prList, opts)
+			interrupted := errors.Is(err, context.Canceled)
+			if err != nil && !interrupted {
 				return fmt.Errorf("failed to find dangling blobs: %w", err)
 			}
+			if interrupted {
+				logger.Warn("interrupted: showing partial results", "found", len(blobs))
+			}
+
+			var totalSize int64
+			for _, b := range blobs {
+				if b.Size != nil {
+					totalSize += int64(*b.Size)
+				}
+			}
+			logger.Info("dangling blob search complete", "found", len(blobs), "total_size", humanize.Bytes(uint64(totalSize)))
 
 			if sortFlag != "" {
 				desc := strings.EqualFold(orderFlag, "desc")
-				if err := gh.SortBlobsBy(blobs, sortFlag, desc); err != nil {
+				if err := dangling.SortBlobsBy(blobs, sortFlag, desc); err != nil {
 					return fmt.Errorf("failed to sort dangling blobs: %w", err)
 				}
 			}
 
-			r := render.NewRenderer(exporter)
+			r := dangling.NewRenderer(exporter)
 			return r.RenderDanglingBlobs(blobs, nil)
 		},
 	}
 
-	cmd.Flags().StringVarP(&repoFlag, "repo", "R", "", "Repository in \"[HOST/]OWNER/REPO\" format (default: current repository)")
-	cmd.Flags().IntVar(&limitFlag, "limit", -1, "Maximum number of closed PRs to inspect (ignored when --pr is specified)")
-	cmd.Flags().IntSliceVar(&prFlag, "pr", nil, "PR numbers to inspect (default: all closed PRs)")
-	cmd.Flags().BoolVar(&noSquashMergeFlag, "no-squash-merge", false, "Disable squash/rebase merged PR blob detection")
-	cmd.Flags().BoolVar(&noForcePushFlag, "no-force-push", false, "Disable force-push dropped commit blob detection")
-	cmd.Flags().BoolVar(&noClosedFlag, "no-closed", false, "Disable closed unmerged PR blob detection")
-	cmdutil.StringEnumFlag(cmd, &reachabilityCheckFlag, "reachability-check", "", string(gh.ReachabilityCheckNone), gh.ReachabilityCheckModeValues, "Verify candidates are truly not reachable from a branch")
-	cmd.Flags().StringVar(&localDefaultBranchFlag, "local-default-branch", "", "Remote-tracking ref for --reachability-check=local-default (e.g. \"origin/main\"; auto-detected if empty)")
+	f := cmd.Flags()
+	f.StringVarP(&repoFlag, "repo", "R", "", "Repository in \"[HOST/]OWNER/REPO\" format (default: current repository)")
+	f.IntVar(&limitFlag, "limit", -1, "Maximum number of closed PRs to inspect (ignored when --pr is specified)")
+	f.IntSliceVar(&prFlag, "pr", nil, "PR numbers to inspect (default: all closed PRs)")
+	f.BoolVar(&noSquashMergeFlag, "no-squash-merge", false, "Disable squash/rebase merged PR blob detection")
+	f.BoolVar(&noForcePushFlag, "no-force-push", false, "Disable force-push dropped commit blob detection")
+	f.BoolVar(&noClosedFlag, "no-closed", false, "Disable closed unmerged PR blob detection")
+	cmdutil.StringEnumFlag(cmd, &reachabilityCheckFlag, "reachability-check", "", string(dangling.ReachabilityCheckNone), []string{string(dangling.ReachabilityCheckNone), string(dangling.ReachabilityCheckLocalObject)}, "Filter out blobs reachable from a local ref (requires git fetch --all --tags): none, local-object")
+	f.BoolVar(&strictErrorsFlag, "strict-errors", false, "Fail immediately on any API or git error instead of logging and continuing")
+	f.StringVar(&gitDirFlag, "git-dir", "", "Path to a git directory for local reachability checks (default: auto-setup bare clone cache when --repo is specified)")
 	cmdutil.StringEnumFlag(cmd, &sortFlag, "sort", "", "", []string{"size", "path", "pr_number"}, "Sort by field")
 	cmdutil.StringEnumFlag(cmd, &orderFlag, "order", "", "asc", []string{"asc", "desc"}, "Sort order")
 	cmdutil.AddFormatFlags(cmd, &exporter)

@@ -4,7 +4,9 @@ Copyright © 2025 srz_zumix
 package cmd
 
 import (
+	"context"
 	"os"
+	"os/signal"
 
 	"github.com/spf13/cobra"
 	"github.com/srz-zumix/gh-diet-kit/version"
@@ -30,7 +32,9 @@ var rootCmd = &cobra.Command{
 }
 
 func Execute() {
-	err := rootCmd.Execute()
+	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt)
+	defer stop()
+	err := rootCmd.ExecuteContext(ctx)
 	if err != nil {
 		os.Exit(1)
 	}
