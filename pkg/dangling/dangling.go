@@ -588,28 +588,37 @@ func iterateDanglingCommits(ctx context.Context, g *GitHubClient, repo repositor
 		}
 		logger.Debug("checking PR", "progress", fmt.Sprintf("%d/%d", i+1, len(prs)), "pr", pr.GetNumber(), "title", pr.GetTitle())
 
+		// Skip merged PRs that have all detection methods disabled.
+		if pr.MergedAt != nil && opts.DisableSquashRebase && opts.DisableForcePush {
+			logger.Debug("skipping merged PR: all merged-PR methods disabled", "pr", pr.GetNumber())
+			continue
+		}
+
 		// Try to load candidates from cache using the PR number and head SHA as the key.
 		// A non-empty head SHA is required; PRs without one are processed normally.
 		headSHA := prHeadSHA(pr)
 		if headSHA != "" {
 			if cached := cache.load(pr.GetNumber(), headSHA); cached != nil {
 				logger.Debug("pr cache hit", "pr", pr.GetNumber())
-				// Candidates are cached separately by type so that processChainCandidates
-				// can apply the two-endpoint shortcut on the chain, exactly as the
-				// non-cache path does.
-				cachedChain := reconstruct(cached.ChainCommits)
-				cachedFP := reconstruct(cached.ForcePushCommits)
+				// Filter cached candidates according to the current opts, mirroring
+				// the collection logic in listCandidatesForPR / listForcePushedOutPRCommits.
+				// Chain commits are relevant only when the detection method for this PR type
+				// is enabled in the current run.
+				var cachedChain []*github.RepositoryCommit
+				chainEnabled := (pr.MergedAt != nil && !opts.DisableSquashRebase) ||
+					(pr.MergedAt == nil && !opts.DisableClosed)
+				if chainEnabled {
+					cachedChain = reconstruct(cached.ChainCommits)
+				}
+				var cachedFP []*github.RepositoryCommit
+				if !opts.DisableForcePush {
+					cachedFP = reconstruct(cached.ForcePushCommits)
+				}
 				if err := processPRCandidates(ctx, g, repo, pr, cachedChain, cachedFP, opts, unreachableSHAs, visit); err != nil {
 					return err
 				}
 				continue
 			}
-		}
-
-		// Skip merged PRs that have all detection methods disabled.
-		if pr.MergedAt != nil && opts.DisableSquashRebase && opts.DisableForcePush {
-			logger.Debug("skipping merged PR: all merged-PR methods disabled", "pr", pr.GetNumber())
-			continue
 		}
 
 		chain, err := listCandidatesForPR(ctx, g, repo, pr, opts)
