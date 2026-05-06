@@ -819,13 +819,16 @@ func FindLocalDanglingCommitsOnRemote(ctx context.Context, g *GitHubClient, repo
 	logger.Info("checking local dangling commits against remote", "total", len(shas))
 	var result []*DanglingCommit
 	for _, sha := range shas {
+		if err := ctx.Err(); err != nil {
+			return result, err
+		}
 		commit, err := g.GetCommitMeta(ctx, repo.Owner, repo.Name, sha)
 		if err != nil {
 			if IsHTTPNotFound(err) {
 				logger.Debug("commit not found on remote", "sha", sha)
 				continue
 			}
-			return nil, fmt.Errorf("failed to get commit %s from remote: %w", sha, err)
+			return result, fmt.Errorf("failed to get commit %s from remote: %w", sha, err)
 		}
 		message := ""
 		if commit.GetCommit() != nil {

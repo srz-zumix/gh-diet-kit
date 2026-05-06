@@ -111,13 +111,13 @@ Output fields: SHA, PATH, SIZE, COMMIT_SHA, PR_NUMBER, PR_URL`,
 				logger.Warn("interrupted: showing partial results", "found", len(blobs))
 			}
 
-			var totalSize int64
+			var totalSize uint64
 			for _, b := range blobs {
-				if b.Size != nil {
-					totalSize += int64(*b.Size)
+				if b.Size != nil && *b.Size > 0 {
+					totalSize += uint64(*b.Size)
 				}
 			}
-			logger.Info("dangling blob search complete", "found", len(blobs), "total_size", humanize.Bytes(uint64(totalSize)))
+			logger.Info("dangling blob search complete", "found", len(blobs), "total_size", humanize.Bytes(totalSize))
 
 			if sortFlag != "" {
 				desc := strings.EqualFold(orderFlag, "desc")

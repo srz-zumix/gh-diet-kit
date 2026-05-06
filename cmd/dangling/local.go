@@ -2,12 +2,14 @@ package dangling
 
 import (
 	"context"
+	"errors"
 	"fmt"
 
 	"github.com/cli/cli/v2/pkg/cmdutil"
 	"github.com/spf13/cobra"
 	"github.com/srz-zumix/gh-diet-kit/pkg/dangling"
 	"github.com/srz-zumix/go-gh-extension/pkg/gitutil"
+	"github.com/srz-zumix/go-gh-extension/pkg/logger"
 	"github.com/srz-zumix/go-gh-extension/pkg/parser"
 )
 
@@ -41,7 +43,7 @@ the git remote.
 
 Output fields: SHA, MESSAGE`,
 		RunE: func(cmd *cobra.Command, args []string) error {
-			ctx := context.Background()
+			ctx := cmd.Context()
 
 			repo, err := parser.Repository(parser.RepositoryInput(repoFlag))
 			if err != nil {
@@ -59,8 +61,12 @@ Output fields: SHA, MESSAGE`,
 			}
 
 			commits, err := dangling.FindLocalDanglingCommitsOnRemote(ctx, g, repo, shas)
-			if err != nil {
+			interrupted := errors.Is(err, context.Canceled)
+			if err != nil && !interrupted {
 				return fmt.Errorf("failed to check dangling commits on remote: %w", err)
+			}
+			if interrupted {
+				logger.Warn("interrupted: showing partial results", "found", len(commits))
 			}
 
 			r := dangling.NewRenderer(exporter)
