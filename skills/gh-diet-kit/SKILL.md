@@ -157,8 +157,8 @@ Output fields: `SHA`, `PATH`, `SIZE`, `COMMIT_SHA`, `PR_NUMBER`, `PR_URL`.
 gh diet-kit dangling blobs -R owner/repo --limit 200
 # Inspect specific PRs only
 gh diet-kit dangling blobs -R owner/repo --pr 42,43
-# Squash/rebase detection only, confirm with default-branch reachability check
-gh diet-kit dangling blobs --no-closed --no-force-push --reachability-check default-branch
+# Squash/rebase detection only, confirm with local-object reachability check
+gh diet-kit dangling blobs --no-closed --no-force-push --reachability-check local-object
 # Force-push detection only
 gh diet-kit dangling blobs --no-closed --no-squash-merge
 # All methods, output as JSON
