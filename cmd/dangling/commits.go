@@ -31,7 +31,8 @@ func NewCommitsCmd() *cobra.Command {
 	var reachabilityCheckFlag string
 	var strictErrorsFlag bool
 	var noCacheFlag bool
-	var noGitCacheFlag bool
+	var clearCacheFlag bool
+	var clearGitCacheFlag bool
 	var exporter cmdutil.Exporter
 
 	cmd := &cobra.Command{
@@ -64,7 +65,7 @@ Output fields: SHA, PR_NUMBER, PR_URL, SIZE, MESSAGE`,
 					return fmt.Errorf("failed to determine repository: %w", err)
 				}
 				blobless := true // commit reachability only; blobs not needed
-				dir, err := dangling.SetupLocalGitCache(ctx, repo, blobless, noGitCacheFlag)
+				dir, err := dangling.SetupLocalGitCache(ctx, repo, blobless, clearGitCacheFlag)
 				if err != nil {
 					return fmt.Errorf("failed to set up local git cache for --repo: %w", err)
 				}
@@ -94,6 +95,7 @@ Output fields: SHA, PR_NUMBER, PR_URL, SIZE, MESSAGE`,
 				StrictErrors:        strictErrorsFlag,
 				GitDir:              gitDir,
 				NoCache:             noCacheFlag,
+				ClearCache:          clearCacheFlag,
 			}
 
 			logger.Info("inspecting PRs for dangling commits", "total", len(prList))
@@ -136,7 +138,8 @@ Output fields: SHA, PR_NUMBER, PR_URL, SIZE, MESSAGE`,
 	cmdutil.StringEnumFlag(cmd, &reachabilityCheckFlag, "reachability-check", "", string(dangling.ReachabilityCheckNone), dangling.ReachabilityCheckModeValues, "Verify candidates are truly not reachable from a branch or tag")
 	f.BoolVar(&strictErrorsFlag, "strict-errors", false, "Fail immediately on any API or git error instead of logging and continuing")
 	f.BoolVar(&noCacheFlag, "no-cache", false, "Disable per-PR result cache (always re-process all PRs)")
-	f.BoolVar(&noGitCacheFlag, "no-git-cache", false, "Clear the git bare clone cache and re-clone before running")
+	f.BoolVar(&clearCacheFlag, "clear-cache", false, "Clear the per-PR and commit blob cache before running, then use cache normally")
+	f.BoolVar(&clearGitCacheFlag, "clear-git-cache", false, "Clear the git bare clone cache and re-clone before running")
 	cmdutil.StringEnumFlag(cmd, &sortFlag, "sort", "", "", []string{"size", "pr_number"}, "Sort by field")
 	cmdutil.StringEnumFlag(cmd, &orderFlag, "order", "", "asc", []string{"asc", "desc"}, "Sort order")
 	cmdutil.AddFormatFlags(cmd, &exporter)

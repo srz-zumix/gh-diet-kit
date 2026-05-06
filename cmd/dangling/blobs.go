@@ -31,7 +31,8 @@ func NewBlobsCmd() *cobra.Command {
 	var reachabilityCheckFlag string
 	var strictErrorsFlag bool
 	var noCacheFlag bool
-	var noGitCacheFlag bool
+	var clearCacheFlag bool
+	var clearGitCacheFlag bool
 	var exporter cmdutil.Exporter
 
 	cmd := &cobra.Command{
@@ -72,7 +73,7 @@ Output fields: SHA, PATH, SIZE, COMMIT_SHA, PR_NUMBER, PR_URL`,
 					return fmt.Errorf("failed to determine repository: %w", err)
 				}
 				// full clone needed for blob content reachability
-				dir, err := dangling.SetupLocalGitCache(ctx, repo, false, noGitCacheFlag)
+				dir, err := dangling.SetupLocalGitCache(ctx, repo, false, clearGitCacheFlag)
 				if err != nil {
 					return fmt.Errorf("failed to set up local git cache for --repo: %w", err)
 				}
@@ -102,6 +103,7 @@ Output fields: SHA, PATH, SIZE, COMMIT_SHA, PR_NUMBER, PR_URL`,
 				StrictErrors:        strictErrorsFlag,
 				GitDir:              gitDir,
 				NoCache:             noCacheFlag,
+				ClearCache:          clearCacheFlag,
 			}
 
 			logger.Info("inspecting PRs for dangling blobs", "total", len(prList))
@@ -144,7 +146,8 @@ Output fields: SHA, PATH, SIZE, COMMIT_SHA, PR_NUMBER, PR_URL`,
 	cmdutil.StringEnumFlag(cmd, &reachabilityCheckFlag, "reachability-check", "", string(dangling.ReachabilityCheckNone), []string{string(dangling.ReachabilityCheckNone), string(dangling.ReachabilityCheckLocalObject)}, "Filter out blobs reachable from a local ref (requires git fetch --all --tags): none, local-object")
 	f.BoolVar(&strictErrorsFlag, "strict-errors", false, "Fail immediately on any API or git error instead of logging and continuing")
 	f.BoolVar(&noCacheFlag, "no-cache", false, "Disable per-PR result cache (always re-process all PRs)")
-	f.BoolVar(&noGitCacheFlag, "no-git-cache", false, "Clear the git bare clone cache and re-clone before running")
+	f.BoolVar(&clearCacheFlag, "clear-cache", false, "Clear the per-PR and commit blob cache before running, then use cache normally")
+	f.BoolVar(&clearGitCacheFlag, "clear-git-cache", false, "Clear the git bare clone cache and re-clone before running")
 	cmdutil.StringEnumFlag(cmd, &sortFlag, "sort", "", "", []string{"size", "path", "pr_number"}, "Sort by field")
 	cmdutil.StringEnumFlag(cmd, &orderFlag, "order", "", "asc", []string{"asc", "desc"}, "Sort order")
 	cmdutil.AddFormatFlags(cmd, &exporter)

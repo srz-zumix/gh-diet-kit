@@ -124,6 +124,10 @@ type DanglingOptions struct {
 	// each PR are written to disk and reused on subsequent runs with the same options,
 	// allowing interrupted runs to resume without re-processing already-checked PRs.
 	NoCache bool
+	// ClearCache clears the per-PR and commit blob cache directories before starting
+	// the run, then uses them normally. This allows a clean re-run without disabling
+	// caching for future incremental resumes.
+	ClearCache bool
 }
 
 // parentUnreachable reports whether any of the given parent commits has a SHA
@@ -196,7 +200,14 @@ type commitBlobInfo struct {
 // fetchCommitBlobInfo fetches the full commit diff and builds a blob SHA→size map
 // from the commit's tree. Returns (nil, nil) when the commit should be skipped
 // (404 or lenient non-fatal error). Returns (nil, err) on a fatal error.
-func fetchCommitBlobInfo(ctx context.Context, g *GitHubClient, repo repository.Repository, sha string, opts DanglingOptions) (*commitBlobInfo, error) {
+// When blobCache is non-nil, cached results are returned immediately and new
+// results are persisted after a successful fetch.
+func fetchCommitBlobInfo(ctx context.Context, g *GitHubClient, repo repository.Repository, sha string, opts DanglingOptions, blobCache *commitBlobCache) (*commitBlobInfo, error) {
+	if cached := blobCache.load(sha); cached != nil {
+		logger.Debug("commit blob cache hit", "sha", sha)
+		return cached.toCommitBlobInfo(), nil
+	}
+
 	commit, err := g.GetCommit(ctx, repo.Owner, repo.Name, sha)
 	if err != nil {
 		if IsHTTPNotFound(err) {
@@ -229,6 +240,7 @@ func fetchCommitBlobInfo(ctx context.Context, g *GitHubClient, repo repository.R
 			}
 		}
 	}
+	blobCache.save(sha, info)
 	return info, nil
 }
 
@@ -580,6 +592,11 @@ func iterateDanglingCommits(ctx context.Context, g *GitHubClient, repo repositor
 	var cache *prCache
 	if !opts.NoCache {
 		cache = newPRCache(repo)
+		if opts.ClearCache {
+			cache.clear()
+		}
+	} else {
+		newPRCache(repo).clear()
 	}
 
 	for i, pr := range prs {
@@ -678,10 +695,19 @@ func iterateDanglingCommits(ctx context.Context, g *GitHubClient, repo repositor
 // querying the fork. PRs from deleted forks (pr.Head.Repo == nil) are included.
 func FindDanglingCommits(ctx context.Context, g *GitHubClient, repo repository.Repository, prs []*github.PullRequest, opts DanglingOptions) ([]*DanglingCommit, error) {
 	var result []*DanglingCommit
+	var blobCache *commitBlobCache
+	if !opts.NoCache {
+		blobCache = newCommitBlobCache(repo)
+		if opts.ClearCache {
+			blobCache.clear()
+		}
+	} else {
+		newCommitBlobCache(repo).clear()
+	}
 	err := iterateDanglingCommits(ctx, g, repo, prs, opts, func(pr *github.PullRequest, commits []*github.RepositoryCommit) error {
 		for _, c := range commits {
 			sha := c.GetSHA()
-			info, err := fetchCommitBlobInfo(ctx, g, repo, sha, opts)
+			info, err := fetchCommitBlobInfo(ctx, g, repo, sha, opts, blobCache)
 			if err != nil {
 				return err
 			}
@@ -724,6 +750,15 @@ func FindDanglingCommits(ctx context.Context, g *GitHubClient, repo repository.R
 // Blobs are deduplicated by SHA within each PR.
 func FindDanglingBlobs(ctx context.Context, g *GitHubClient, repo repository.Repository, prs []*github.PullRequest, opts DanglingOptions) ([]*DanglingBlob, error) {
 	var result []*DanglingBlob
+	var blobCache *commitBlobCache
+	if !opts.NoCache {
+		blobCache = newCommitBlobCache(repo)
+		if opts.ClearCache {
+			blobCache.clear()
+		}
+	} else {
+		newCommitBlobCache(repo).clear()
+	}
 	// reachableBlobSHAs caches blob SHAs confirmed reachable from a local ref so
 	// they are not re-checked across multiple PRs. Only positive (reachable)
 	// results are cached because a reachable blob must be skipped globally,
@@ -734,7 +769,7 @@ func FindDanglingBlobs(ctx context.Context, g *GitHubClient, repo repository.Rep
 		seen := make(map[string]bool)
 		for _, c := range commits {
 			commitSHA := c.GetSHA()
-			info, err := fetchCommitBlobInfo(ctx, g, repo, commitSHA, opts)
+			info, err := fetchCommitBlobInfo(ctx, g, repo, commitSHA, opts, blobCache)
 			if err != nil {
 				return err
 			}

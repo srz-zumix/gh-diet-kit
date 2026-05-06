@@ -48,11 +48,12 @@ gh diet-kit dangling blobs [flags]
 
 | Flag | Shorthand | Default | Description |
 |------|-----------|---------|-------------|
+| `--clear-cache` | | `false` | Clear the per-PR and commit blob cache before running, then use cache normally |
 | `--limit` | | unlimited | Maximum number of closed PRs to inspect (ignored when `--pr` is specified) |
 | `--no-cache` | | `false` | Disable per-PR result cache; always re-process all PRs |
 | `--no-closed` | | `false` | Disable closed unmerged PR blob detection |
 | `--no-force-push` | | `false` | Disable force-push dropped commit blob detection |
-| `--no-git-cache` | | `false` | Clear the git bare clone cache and re-clone before running |
+| `--clear-git-cache` | | `false` | Clear the git bare clone cache and re-clone before running |
 | `--no-squash-merge` | | `false` | Disable squash/rebase merged PR blob detection |
 | `--order` | | `asc` | Sort order: `asc` or `desc` |
 | `--pr` | | all closed PRs | PR numbers to inspect (comma-separated or repeated, e.g. `--pr 1,2` or `--pr 1 --pr 2`) |
@@ -76,11 +77,12 @@ gh diet-kit dangling commits [flags]
 
 | Flag | Shorthand | Default | Description |
 |------|-----------|---------|-------------|
+| `--clear-cache` | | `false` | Clear the per-PR and commit blob cache before running, then use cache normally |
 | `--limit` | | unlimited | Maximum number of closed PRs to inspect (ignored when `--pr` is specified) |
 | `--no-cache` | | `false` | Disable per-PR result cache; always re-process all PRs |
 | `--no-closed` | | `false` | Disable closed unmerged PR detection |
 | `--no-force-push` | | `false` | Disable force-push dropped commit detection |
-| `--no-git-cache` | | `false` | Clear the git bare clone cache and re-clone before running |
+| `--clear-git-cache` | | `false` | Clear the git bare clone cache and re-clone before running |
 | `--no-squash-merge` | | `false` | Disable squash/rebase merged PR commit detection |
 | `--order` | | `asc` | Sort order: `asc` or `desc` |
 | `--pr` | | all closed PRs | PR numbers to inspect (comma-separated or repeated, e.g. `--pr 1,2` or `--pr 1 --pr 2`) |

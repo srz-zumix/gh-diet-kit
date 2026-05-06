@@ -25,9 +25,11 @@ commands:
     usage: gh diet-kit completion [bash|zsh|fish|powershell]
 
   - name: gh diet-kit dangling blobs
-    description: List blobs referenced only by commits from squash or rebase merged PRs, commits dropped by force-pushes on PR head branches, or commits from closed unmerged PRs, that are not reachable from any normal branch or tag ref. All detection methods are enabled by default. Outputs table (default) or JSON with fields SHA, PATH, SIZE, COMMIT_SHA, PR_NUMBER, PR_URL. Supports sorting by size, path, or pr_number. Per-PR results are cached under ~/.cache/gh-diet-kit/ for resume support; use --no-cache to bypass. Use --no-git-cache to clear and re-clone the git bare clone cache.
+    description: List blobs referenced only by commits from squash or rebase merged PRs, commits dropped by force-pushes on PR head branches, or commits from closed unmerged PRs, that are not reachable from any normal branch or tag ref. All detection methods are enabled by default. Outputs table (default) or JSON with fields SHA, PATH, SIZE, COMMIT_SHA, PR_NUMBER, PR_URL. Supports sorting by size, path, or pr_number. Per-PR results are cached under ~/.cache/gh-diet-kit/ for resume support; use --no-cache to bypass. Use --clear-git-cache to clear and re-clone the git bare clone cache.
     usage: gh diet-kit dangling blobs [flags]
     flags:
+      - name: --clear-cache
+        description: Clear the per-PR and commit blob cache before running, then use cache normally (default: false)
       - name: --limit
         description: Maximum number of closed PRs to inspect (default: unlimited, ignored when --pr is specified)
       - name: --no-cache
@@ -36,7 +38,7 @@ commands:
         description: Disable closed unmerged PR blob detection (default: false)
       - name: --no-force-push
         description: Disable force-push dropped commit blob detection (default: false)
-      - name: --no-git-cache
+      - name: --clear-git-cache
         description: Clear the git bare clone cache and re-clone before running (default: false)
       - name: --no-squash-merge
         description: Disable squash/rebase merged PR blob detection (default: false)
@@ -63,9 +65,11 @@ commands:
         description: Format JSON output using a Go template
 
   - name: gh diet-kit dangling commits
-    description: List commits from squash or rebase merged PRs, commits dropped by force-pushes on PR head branches, or commits from closed unmerged PRs, that are not reachable from any normal branch or tag ref. All detection methods are enabled by default. Outputs table (default) or JSON with fields SHA, PR_NUMBER, PR_URL, SIZE (total size of unique added or modified blobs in the commit diff, human-readable), MESSAGE. Per-PR results are cached under ~/.cache/gh-diet-kit/ for resume support; use --no-cache to bypass. Use --no-git-cache to clear and re-clone the git bare clone cache.
+    description: List commits from squash or rebase merged PRs, commits dropped by force-pushes on PR head branches, or commits from closed unmerged PRs, that are not reachable from any normal branch or tag ref. All detection methods are enabled by default. Outputs table (default) or JSON with fields SHA, PR_NUMBER, PR_URL, SIZE (total size of unique added or modified blobs in the commit diff, human-readable), MESSAGE. Per-PR results are cached under ~/.cache/gh-diet-kit/ for resume support; use --no-cache to bypass. Use --clear-git-cache to clear and re-clone the git bare clone cache.
     usage: gh diet-kit dangling commits [flags]
     flags:
+      - name: --clear-cache
+        description: Clear the per-PR and commit blob cache before running, then use cache normally (default: false)
       - name: --limit
         description: Maximum number of closed PRs to inspect (default: unlimited, ignored when --pr is specified)
       - name: --no-cache
@@ -74,7 +78,7 @@ commands:
         description: Disable closed unmerged PR detection (default: false)
       - name: --no-force-push
         description: Disable force-push dropped commit detection (default: false)
-      - name: --no-git-cache
+      - name: --clear-git-cache
         description: Clear the git bare clone cache and re-clone before running (default: false)
       - name: --no-squash-merge
         description: Disable squash/rebase merged PR commit detection (default: false)
