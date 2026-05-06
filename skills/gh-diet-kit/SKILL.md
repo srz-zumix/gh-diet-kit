@@ -25,7 +25,7 @@ commands:
     usage: gh diet-kit completion [bash|zsh|fish|powershell]
 
   - name: gh diet-kit dangling blobs
-    description: List blobs referenced only by commits from squash or rebase merged PRs, commits dropped by force-pushes on PR head branches, or commits from closed unmerged PRs, that are not reachable from any normal branch or tag ref. All detection methods are enabled by default. Outputs table (default) or JSON with fields SHA, PATH, SIZE, COMMIT_SHA, PR_NUMBER, PR_URL. Supports sorting by size, path, or pr_number. Per-PR results are cached under the OS user cache directory (e.g. ~/.cache/gh-diet-kit/ on Linux) for resume support; use --no-cache to bypass. Use --clear-git-cache to clear and re-clone the git bare clone cache.
+    description: List blobs referenced only by commits from squash or rebase merged PRs, commits dropped by force-pushes on PR head branches, or commits from closed unmerged PRs, that are not reachable from any normal branch or tag ref. All detection methods are enabled by default. Outputs table (default) or JSON with fields SHA, PATH, SIZE, COMMIT_SHA, PR_NUMBER, PR_URL. In JSON, SIZE is omitted when blob sizes are unavailable. Supports sorting by size, path, or pr_number. Per-PR results are cached under the OS user cache directory (e.g. ~/.cache/gh-diet-kit/ on Linux) for resume support; use --no-cache to bypass. Use --clear-git-cache to clear and re-clone the git bare clone cache.
     usage: gh diet-kit dangling blobs [flags]
     flags:
       - name: --clear-cache
@@ -65,7 +65,7 @@ commands:
         description: Format JSON output using a Go template
 
   - name: gh diet-kit dangling commits
-    description: List commits from squash or rebase merged PRs, commits dropped by force-pushes on PR head branches, or commits from closed unmerged PRs, that are not reachable from any normal branch or tag ref. All detection methods are enabled by default. Outputs table (default) or JSON with fields SHA, PR_NUMBER, PR_URL, SIZE (total size of unique added or modified blobs in the commit diff, human-readable), MESSAGE. Per-PR results are cached under the OS user cache directory (e.g. ~/.cache/gh-diet-kit/ on Linux) for resume support; use --no-cache to bypass. Use --clear-git-cache to clear and re-clone the git bare clone cache.
+    description: List commits from squash or rebase merged PRs, commits dropped by force-pushes on PR head branches, or commits from closed unmerged PRs, that are not reachable from any normal branch or tag ref. All detection methods are enabled by default. Outputs table (default) or JSON with fields SHA, PR_NUMBER, PR_URL, SIZE (total size of unique added or modified blobs in the commit diff, human-readable), MESSAGE. In JSON, SIZE is omitted when blob sizes are unavailable. Per-PR results are cached under the OS user cache directory (e.g. ~/.cache/gh-diet-kit/ on Linux) for resume support; use --no-cache to bypass. Use --clear-git-cache to clear and re-clone the git bare clone cache.
     usage: gh diet-kit dangling commits [flags]
     flags:
       - name: --clear-cache
@@ -105,7 +105,7 @@ commands:
         description: Format JSON output using a Go template
 
   - name: gh diet-kit dangling local
-    description: List commits that are not reachable from any local branch or tag ref but exist on the remote GitHub repository. Must be run inside a local git clone. Outputs table (default) or JSON with fields SHA, MESSAGE.
+    description: List commits that are not reachable from any local branch or tag ref but exist on the remote GitHub repository. Must be run inside a local git clone. Outputs table (default) or JSON with fields SHA, MESSAGE. In JSON, pr_number, pr_url, and size fields are omitted.
     usage: gh diet-kit dangling local [flags]
     flags:
       - name: --no-reflogs
@@ -166,7 +166,7 @@ List blobs that are referenced only by commits from squash or rebase merged pull
 
 **Note:** Git blobs are content-addressed. A blob introduced by a dangling commit may also appear in a live branch tree via identical file content (e.g. `package-lock.json`, generated files). Without a local git clone this cannot be detected efficiently via the GitHub API, so results may contain false positives. Use `--reachability-check local-object` (after running `git fetch --all --tags`) to filter out blobs that are still reachable from any local ref. Note: `git fetch --all` alone does not fetch tags that are not reachable from any branch.
 
-Output fields: `SHA`, `PATH`, `SIZE`, `COMMIT_SHA`, `PR_NUMBER`, `PR_URL`.
+Output fields: `SHA`, `PATH`, `SIZE`, `COMMIT_SHA`, `PR_NUMBER`, `PR_URL`. In JSON, `SIZE` is omitted when blob sizes are unavailable.
 
 ```sh
 # Inspect up to 200 closed PRs
@@ -185,7 +185,7 @@ gh diet-kit dangling blobs --format json | jq '.[] | .sha'
 
 List commits from squash or rebase merged pull requests, commits dropped by force-pushes on PR head branches, or commits from closed unmerged pull requests, that are not reachable from any normal branch or tag ref. All detection methods are enabled by default.
 
-Output fields: `SHA`, `PR_NUMBER`, `PR_URL`, `SIZE`, `MESSAGE`. `SIZE` is the total size of unique blobs added or modified in the commit diff (human-readable, e.g. `1.2 MB`).
+Output fields: `SHA`, `PR_NUMBER`, `PR_URL`, `SIZE`, `MESSAGE`. `SIZE` is the total size of unique blobs added or modified in the commit diff (human-readable, e.g. `1.2 MB`). In JSON, `SIZE` is omitted when blob sizes are unavailable.
 
 ```sh
 # Inspect up to 200 closed PRs
@@ -204,7 +204,7 @@ gh diet-kit dangling commits --format json | jq '.[] | .sha'
 
 List commits that are not reachable from any local branch or tag ref but exist on the remote GitHub repository.
 
-Output fields: `SHA`, `MESSAGE`.
+Output fields: `SHA`, `MESSAGE`. In JSON, `pr_number`, `pr_url`, and `size` fields are omitted.
 
 ```sh
 gh diet-kit dangling local

@@ -40,7 +40,7 @@ List blobs that are referenced only by commits from squash or rebase merged pull
 
 **Note:** Git blobs are content-addressed. A blob introduced by a dangling commit may also appear in a live branch tree via identical file content (e.g. `package-lock.json`, generated files). Without a local git clone this cannot be detected efficiently via the GitHub API, so results may contain false positives. Use `--reachability-check local-object` (after running `git fetch --all --tags`) to filter out blobs that are still reachable from any local ref. Note: `git fetch --all` alone does not fetch tags that are not reachable from any branch, so commits reachable only from such tags may be misreported.
 
-Output fields: `SHA`, `PATH`, `SIZE`, `COMMIT_SHA`, `PR_NUMBER`, `PR_URL`.
+Output fields: `SHA`, `PATH`, `SIZE`, `COMMIT_SHA`, `PR_NUMBER`, `PR_URL`. In JSON, `SIZE` is omitted when blob sizes are unavailable.
 
 ```sh
 gh diet-kit dangling blobs [flags]
@@ -69,7 +69,7 @@ gh diet-kit dangling blobs [flags]
 
 List commits that originate from squash or rebase merged pull requests, commits dropped by force-pushes on PR head branches, or commits from closed unmerged pull requests, and are not reachable from any normal branch or tag ref on the remote. All detection methods are enabled by default.
 
-Output fields: `SHA`, `PR_NUMBER`, `PR_URL`, `SIZE`, `MESSAGE`. `SIZE` is the sum of sizes of unique blobs added or modified in the commit diff.
+Output fields: `SHA`, `PR_NUMBER`, `PR_URL`, `SIZE`, `MESSAGE`. `SIZE` is the sum of sizes of unique blobs added or modified in the commit diff. In JSON, `SIZE` is omitted when blob sizes are unavailable.
 
 ```sh
 gh diet-kit dangling commits [flags]
@@ -102,7 +102,7 @@ Locally dangling commits can originate from rebasing, amending, fetching now-del
 
 Must be run inside a local git clone. By default reflog entries are included in reachability analysis; use `--no-reflogs` to ignore them.
 
-Output fields: `SHA`, `MESSAGE`.
+Output fields: `SHA`, `MESSAGE`. In JSON, `pr_number`, `pr_url`, and `size` fields are omitted.
 
 ```sh
 gh diet-kit dangling local [flags]

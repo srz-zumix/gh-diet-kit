@@ -38,23 +38,23 @@ func GetPRsByNumbers(ctx context.Context, g *GitHubClient, repo repository.Repos
 // original PR commits are not ancestors of the resulting merge commit, or commits
 // dropped by force-pushes on the PR head branch.
 type DanglingCommit struct {
-	SHA           string
-	Message       string
-	PRNumber      int
-	PRURL         string
-	TotalBlobSize *uint64
+	SHA           string  `json:"sha"`
+	Message       string  `json:"message"`
+	PRNumber      int     `json:"pr_number,omitempty"`
+	PRURL         string  `json:"pr_url,omitempty"`
+	TotalBlobSize *uint64 `json:"total_blob_size,omitempty"`
 }
 
 // DanglingBlob represents a blob that is referenced only by dangling commits.
 // These blobs may exist in GitHub's object store but are not part of any current
 // branch or tag tree.
 type DanglingBlob struct {
-	SHA       string
-	Path      string
-	Size      *int // nil when size is unavailable (e.g. diff-based detection)
-	CommitSHA string
-	PRNumber  int
-	PRURL     string
+	SHA       string `json:"sha"`
+	Path      string `json:"path"`
+	Size      *int   `json:"size,omitempty"` // nil when size is unavailable (e.g. diff-based detection)
+	CommitSHA string `json:"commit_sha"`
+	PRNumber  int    `json:"pr_number"`
+	PRURL     string `json:"pr_url"`
 }
 
 // ReachabilityCheckMode specifies the method used to verify that a candidate commit
