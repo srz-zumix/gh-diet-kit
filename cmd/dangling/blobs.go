@@ -145,7 +145,7 @@ Output fields: SHA, PATH, SIZE, COMMIT_SHA, PR_NUMBER, PR_URL`,
 	f.BoolVar(&noClosedFlag, "no-closed", false, "Disable closed unmerged PR blob detection")
 	cmdutil.StringEnumFlag(cmd, &reachabilityCheckFlag, "reachability-check", "", string(dangling.ReachabilityCheckNone), []string{string(dangling.ReachabilityCheckNone), string(dangling.ReachabilityCheckLocalObject)}, "Filter out blobs reachable from a local ref (requires git fetch --all --tags): none, local-object")
 	f.BoolVar(&strictErrorsFlag, "strict-errors", false, "Fail immediately on any API or git error instead of logging and continuing")
-	f.BoolVar(&noCacheFlag, "no-cache", false, "Disable per-PR result cache (always re-process all PRs)")
+	f.BoolVar(&noCacheFlag, "no-cache", false, "Disable per-PR result cache (always re-process all PRs); does not clear existing cache entries")
 	f.BoolVar(&clearCacheFlag, "clear-cache", false, "Clear the per-PR and commit blob cache before running, then use cache normally")
 	f.BoolVar(&clearGitCacheFlag, "clear-git-cache", false, "Clear the git bare clone cache and re-clone before running")
 	cmdutil.StringEnumFlag(cmd, &sortFlag, "sort", "", "", []string{"size", "path", "pr_number"}, "Sort by field")

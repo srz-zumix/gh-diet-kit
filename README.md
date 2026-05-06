@@ -50,7 +50,7 @@ gh diet-kit dangling blobs [flags]
 |------|-----------|---------|-------------|
 | `--clear-cache` | | `false` | Clear the per-PR and commit blob cache before running, then use cache normally |
 | `--limit` | | unlimited | Maximum number of closed PRs to inspect (ignored when `--pr` is specified) |
-| `--no-cache` | | `false` | Disable per-PR result cache; always re-process all PRs |
+| `--no-cache` | | `false` | Disable per-PR result cache; always re-process all PRs (does not clear existing cache entries) |
 | `--no-closed` | | `false` | Disable closed unmerged PR blob detection |
 | `--no-force-push` | | `false` | Disable force-push dropped commit blob detection |
 | `--clear-git-cache` | | `false` | Clear the git bare clone cache and re-clone before running |
@@ -79,7 +79,7 @@ gh diet-kit dangling commits [flags]
 |------|-----------|---------|-------------|
 | `--clear-cache` | | `false` | Clear the per-PR and commit blob cache before running, then use cache normally |
 | `--limit` | | unlimited | Maximum number of closed PRs to inspect (ignored when `--pr` is specified) |
-| `--no-cache` | | `false` | Disable per-PR result cache; always re-process all PRs |
+| `--no-cache` | | `false` | Disable per-PR result cache; always re-process all PRs (does not clear existing cache entries) |
 | `--no-closed` | | `false` | Disable closed unmerged PR detection |
 | `--no-force-push` | | `false` | Disable force-push dropped commit detection |
 | `--clear-git-cache` | | `false` | Clear the git bare clone cache and re-clone before running |

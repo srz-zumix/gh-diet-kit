@@ -123,10 +123,11 @@ type DanglingOptions struct {
 	// NoCache disables the per-PR result cache. When false (default), results for
 	// each PR are written to disk and reused on subsequent runs with the same options,
 	// allowing interrupted runs to resume without re-processing already-checked PRs.
+	// Does not clear existing cache entries; combine with ClearCache to wipe and disable.
 	NoCache bool
 	// ClearCache clears the per-PR and commit blob cache directories before starting
-	// the run, then uses them normally. This allows a clean re-run without disabling
-	// caching for future incremental resumes.
+	// the run. Can be combined with NoCache to wipe without using the cache, or used
+	// alone to start fresh while still caching results of the current run.
 	ClearCache bool
 }
 
@@ -590,13 +591,11 @@ func iterateDanglingCommits(ctx context.Context, g *GitHubClient, repo repositor
 	unreachableSHAs := make(map[string]bool)
 
 	var cache *prCache
+	if opts.ClearCache {
+		newPRCache(repo).clear()
+	}
 	if !opts.NoCache {
 		cache = newPRCache(repo)
-		if opts.ClearCache {
-			cache.clear()
-		}
-	} else {
-		newPRCache(repo).clear()
 	}
 
 	for i, pr := range prs {
@@ -696,13 +695,11 @@ func iterateDanglingCommits(ctx context.Context, g *GitHubClient, repo repositor
 func FindDanglingCommits(ctx context.Context, g *GitHubClient, repo repository.Repository, prs []*github.PullRequest, opts DanglingOptions) ([]*DanglingCommit, error) {
 	var result []*DanglingCommit
 	var blobCache *commitBlobCache
+	if opts.ClearCache {
+		newCommitBlobCache(repo).clear()
+	}
 	if !opts.NoCache {
 		blobCache = newCommitBlobCache(repo)
-		if opts.ClearCache {
-			blobCache.clear()
-		}
-	} else {
-		newCommitBlobCache(repo).clear()
 	}
 	err := iterateDanglingCommits(ctx, g, repo, prs, opts, func(pr *github.PullRequest, commits []*github.RepositoryCommit) error {
 		for _, c := range commits {
@@ -751,13 +748,11 @@ func FindDanglingCommits(ctx context.Context, g *GitHubClient, repo repository.R
 func FindDanglingBlobs(ctx context.Context, g *GitHubClient, repo repository.Repository, prs []*github.PullRequest, opts DanglingOptions) ([]*DanglingBlob, error) {
 	var result []*DanglingBlob
 	var blobCache *commitBlobCache
+	if opts.ClearCache {
+		newCommitBlobCache(repo).clear()
+	}
 	if !opts.NoCache {
 		blobCache = newCommitBlobCache(repo)
-		if opts.ClearCache {
-			blobCache.clear()
-		}
-	} else {
-		newCommitBlobCache(repo).clear()
 	}
 	// reachableBlobSHAs caches blob SHAs confirmed reachable from a local ref so
 	// they are not re-checked across multiple PRs. Only positive (reachable)

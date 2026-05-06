@@ -137,7 +137,7 @@ Output fields: SHA, PR_NUMBER, PR_URL, SIZE, MESSAGE`,
 	f.BoolVar(&noClosedFlag, "no-closed", false, "Disable closed unmerged PR detection")
 	cmdutil.StringEnumFlag(cmd, &reachabilityCheckFlag, "reachability-check", "", string(dangling.ReachabilityCheckNone), dangling.ReachabilityCheckModeValues, "Verify candidates are truly not reachable from a branch or tag")
 	f.BoolVar(&strictErrorsFlag, "strict-errors", false, "Fail immediately on any API or git error instead of logging and continuing")
-	f.BoolVar(&noCacheFlag, "no-cache", false, "Disable per-PR result cache (always re-process all PRs)")
+	f.BoolVar(&noCacheFlag, "no-cache", false, "Disable per-PR result cache (always re-process all PRs); does not clear existing cache entries")
 	f.BoolVar(&clearCacheFlag, "clear-cache", false, "Clear the per-PR and commit blob cache before running, then use cache normally")
 	f.BoolVar(&clearGitCacheFlag, "clear-git-cache", false, "Clear the git bare clone cache and re-clone before running")
 	cmdutil.StringEnumFlag(cmd, &sortFlag, "sort", "", "", []string{"size", "pr_number"}, "Sort by field")
