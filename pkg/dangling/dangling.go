@@ -40,8 +40,8 @@ func GetPRsByNumbers(ctx context.Context, g *GitHubClient, repo repository.Repos
 type DanglingCommit struct {
 	SHA           string  `json:"sha"`
 	Message       string  `json:"message"`
-	PRNumber      int     `json:"pr_number"`
-	PRURL         string  `json:"pr_url"`
+	PRNumber      int     `json:"pr_number,omitempty"`
+	PRURL         string  `json:"pr_url,omitempty"`
 	TotalBlobSize *uint64 `json:"total_blob_size,omitempty"`
 }
 
