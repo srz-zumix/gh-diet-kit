@@ -123,7 +123,12 @@ type DanglingOptions struct {
 	// NoCache disables the per-PR result cache. When false (default), results for
 	// each PR are written to disk and reused on subsequent runs with the same options,
 	// allowing interrupted runs to resume without re-processing already-checked PRs.
+	// Does not clear existing cache entries; combine with ClearCache to wipe and disable.
 	NoCache bool
+	// ClearCache clears the per-PR and commit blob cache directories before starting
+	// the run. Can be combined with NoCache to wipe without using the cache, or used
+	// alone to start fresh while still caching results of the current run.
+	ClearCache bool
 }
 
 // parentUnreachable reports whether any of the given parent commits has a SHA
@@ -196,7 +201,14 @@ type commitBlobInfo struct {
 // fetchCommitBlobInfo fetches the full commit diff and builds a blob SHA→size map
 // from the commit's tree. Returns (nil, nil) when the commit should be skipped
 // (404 or lenient non-fatal error). Returns (nil, err) on a fatal error.
-func fetchCommitBlobInfo(ctx context.Context, g *GitHubClient, repo repository.Repository, sha string, opts DanglingOptions) (*commitBlobInfo, error) {
+// When blobCache is non-nil, cached results are returned immediately, and newly
+// fetched results are persisted only when the blob size map is available.
+func fetchCommitBlobInfo(ctx context.Context, g *GitHubClient, repo repository.Repository, sha string, opts DanglingOptions, blobCache *commitBlobCache) (*commitBlobInfo, error) {
+	if cached := blobCache.load(sha); cached != nil {
+		logger.Debug("commit blob cache hit", "sha", sha)
+		return cached.toCommitBlobInfo(), nil
+	}
+
 	commit, err := g.GetCommit(ctx, repo.Owner, repo.Name, sha)
 	if err != nil {
 		if IsHTTPNotFound(err) {
@@ -228,6 +240,9 @@ func fetchCommitBlobInfo(ctx context.Context, g *GitHubClient, repo repository.R
 				}
 			}
 		}
+	}
+	if info.BlobSizeMap != nil {
+		blobCache.save(sha, info)
 	}
 	return info, nil
 }
@@ -578,6 +593,9 @@ func iterateDanglingCommits(ctx context.Context, g *GitHubClient, repo repositor
 	unreachableSHAs := make(map[string]bool)
 
 	var cache *prCache
+	if opts.ClearCache {
+		newPRCache(repo).clear()
+	}
 	if !opts.NoCache {
 		cache = newPRCache(repo)
 	}
@@ -678,10 +696,17 @@ func iterateDanglingCommits(ctx context.Context, g *GitHubClient, repo repositor
 // querying the fork. PRs from deleted forks (pr.Head.Repo == nil) are included.
 func FindDanglingCommits(ctx context.Context, g *GitHubClient, repo repository.Repository, prs []*github.PullRequest, opts DanglingOptions) ([]*DanglingCommit, error) {
 	var result []*DanglingCommit
+	var blobCache *commitBlobCache
+	if opts.ClearCache {
+		newCommitBlobCache(repo).clear()
+	}
+	if !opts.NoCache {
+		blobCache = newCommitBlobCache(repo)
+	}
 	err := iterateDanglingCommits(ctx, g, repo, prs, opts, func(pr *github.PullRequest, commits []*github.RepositoryCommit) error {
 		for _, c := range commits {
 			sha := c.GetSHA()
-			info, err := fetchCommitBlobInfo(ctx, g, repo, sha, opts)
+			info, err := fetchCommitBlobInfo(ctx, g, repo, sha, opts, blobCache)
 			if err != nil {
 				return err
 			}
@@ -724,6 +749,13 @@ func FindDanglingCommits(ctx context.Context, g *GitHubClient, repo repository.R
 // Blobs are deduplicated by SHA within each PR.
 func FindDanglingBlobs(ctx context.Context, g *GitHubClient, repo repository.Repository, prs []*github.PullRequest, opts DanglingOptions) ([]*DanglingBlob, error) {
 	var result []*DanglingBlob
+	var blobCache *commitBlobCache
+	if opts.ClearCache {
+		newCommitBlobCache(repo).clear()
+	}
+	if !opts.NoCache {
+		blobCache = newCommitBlobCache(repo)
+	}
 	// reachableBlobSHAs caches blob SHAs confirmed reachable from a local ref so
 	// they are not re-checked across multiple PRs. Only positive (reachable)
 	// results are cached because a reachable blob must be skipped globally,
@@ -734,7 +766,7 @@ func FindDanglingBlobs(ctx context.Context, g *GitHubClient, repo repository.Rep
 		seen := make(map[string]bool)
 		for _, c := range commits {
 			commitSHA := c.GetSHA()
-			info, err := fetchCommitBlobInfo(ctx, g, repo, commitSHA, opts)
+			info, err := fetchCommitBlobInfo(ctx, g, repo, commitSHA, opts, blobCache)
 			if err != nil {
 				return err
 			}

@@ -46,6 +46,17 @@ func newPRCache(repo repository.Repository) *prCache {
 	return &prCache{dir: dir}
 }
 
+// clear removes the entire PR cache directory and all its entries.
+// Errors are logged as warnings and do not propagate.
+func (c *prCache) clear() {
+	if c == nil {
+		return
+	}
+	if err := os.RemoveAll(c.dir); err != nil {
+		logger.Warn("pr cache: failed to clear cache dir", "dir", c.dir, "error", err)
+	}
+}
+
 // cachePath returns the file path for the cache entry of a single PR.
 // Key: <prNumber>-<headSHA>.json
 func (c *prCache) cachePath(prNumber int, headSHA string) string {
