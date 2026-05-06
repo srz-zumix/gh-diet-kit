@@ -30,7 +30,8 @@ func NewBlobsCmd() *cobra.Command {
 	var noClosedFlag bool
 	var reachabilityCheckFlag string
 	var strictErrorsFlag bool
-	var gitDirFlag string
+	var noCacheFlag bool
+	var noGitCacheFlag bool
 	var exporter cmdutil.Exporter
 
 	cmd := &cobra.Command{
@@ -64,17 +65,18 @@ Output fields: SHA, PATH, SIZE, COMMIT_SHA, PR_NUMBER, PR_URL`,
 
 			// When --repo is specified with a local reachability check, auto-setup a bare clone
 			// cache so the check can run against the correct remote repository.
-			if repoFlag != "" && reachabilityCheckFlag == string(dangling.ReachabilityCheckLocalObject) && gitDirFlag == "" {
+			var gitDir string
+			if repoFlag != "" && reachabilityCheckFlag == string(dangling.ReachabilityCheckLocalObject) {
 				repo, err := parser.Repository(parser.RepositoryInput(repoFlag))
 				if err != nil {
 					return fmt.Errorf("failed to determine repository: %w", err)
 				}
 				// full clone needed for blob content reachability
-				dir, err := dangling.SetupLocalGitCache(ctx, repo, false)
+				dir, err := dangling.SetupLocalGitCache(ctx, repo, false, noGitCacheFlag)
 				if err != nil {
 					return fmt.Errorf("failed to set up local git cache for --repo: %w", err)
 				}
-				gitDirFlag = dir
+				gitDir = dir
 			}
 
 			repo, err := parser.Repository(parser.RepositoryInput(repoFlag))
@@ -98,7 +100,8 @@ Output fields: SHA, PATH, SIZE, COMMIT_SHA, PR_NUMBER, PR_URL`,
 				DisableClosed:       noClosedFlag,
 				ReachabilityCheck:   dangling.ReachabilityCheckMode(reachabilityCheckFlag),
 				StrictErrors:        strictErrorsFlag,
-				GitDir:              gitDirFlag,
+				GitDir:              gitDir,
+				NoCache:             noCacheFlag,
 			}
 
 			logger.Info("inspecting PRs for dangling blobs", "total", len(prList))
@@ -140,7 +143,8 @@ Output fields: SHA, PATH, SIZE, COMMIT_SHA, PR_NUMBER, PR_URL`,
 	f.BoolVar(&noClosedFlag, "no-closed", false, "Disable closed unmerged PR blob detection")
 	cmdutil.StringEnumFlag(cmd, &reachabilityCheckFlag, "reachability-check", "", string(dangling.ReachabilityCheckNone), []string{string(dangling.ReachabilityCheckNone), string(dangling.ReachabilityCheckLocalObject)}, "Filter out blobs reachable from a local ref (requires git fetch --all --tags): none, local-object")
 	f.BoolVar(&strictErrorsFlag, "strict-errors", false, "Fail immediately on any API or git error instead of logging and continuing")
-	f.StringVar(&gitDirFlag, "git-dir", "", "Path to a git directory for local reachability checks (default: auto-setup bare clone cache when --repo is specified)")
+	f.BoolVar(&noCacheFlag, "no-cache", false, "Disable per-PR result cache (always re-process all PRs)")
+	f.BoolVar(&noGitCacheFlag, "no-git-cache", false, "Clear the git bare clone cache and re-clone before running")
 	cmdutil.StringEnumFlag(cmd, &sortFlag, "sort", "", "", []string{"size", "path", "pr_number"}, "Sort by field")
 	cmdutil.StringEnumFlag(cmd, &orderFlag, "order", "", "asc", []string{"asc", "desc"}, "Sort order")
 	cmdutil.AddFormatFlags(cmd, &exporter)

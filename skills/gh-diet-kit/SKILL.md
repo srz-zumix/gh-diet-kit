@@ -25,15 +25,19 @@ commands:
     usage: gh diet-kit completion [bash|zsh|fish|powershell]
 
   - name: gh diet-kit dangling blobs
-    description: List blobs referenced only by commits from squash or rebase merged PRs, commits dropped by force-pushes on PR head branches, or commits from closed unmerged PRs, that are not reachable from any normal branch or tag ref. All detection methods are enabled by default. Outputs table (default) or JSON with fields SHA, PATH, SIZE, COMMIT_SHA, PR_NUMBER, PR_URL. Supports sorting by size, path, or pr_number.
+    description: List blobs referenced only by commits from squash or rebase merged PRs, commits dropped by force-pushes on PR head branches, or commits from closed unmerged PRs, that are not reachable from any normal branch or tag ref. All detection methods are enabled by default. Outputs table (default) or JSON with fields SHA, PATH, SIZE, COMMIT_SHA, PR_NUMBER, PR_URL. Supports sorting by size, path, or pr_number. Per-PR results are cached under ~/.cache/gh-diet-kit/ for resume support; use --no-cache to bypass. Use --no-git-cache to clear and re-clone the git bare clone cache.
     usage: gh diet-kit dangling blobs [flags]
     flags:
       - name: --limit
         description: Maximum number of closed PRs to inspect (default: unlimited, ignored when --pr is specified)
+      - name: --no-cache
+        description: Disable per-PR result cache; always re-process all PRs (default: false)
       - name: --no-closed
         description: Disable closed unmerged PR blob detection (default: false)
       - name: --no-force-push
         description: Disable force-push dropped commit blob detection (default: false)
+      - name: --no-git-cache
+        description: Clear the git bare clone cache and re-clone before running (default: false)
       - name: --no-squash-merge
         description: Disable squash/rebase merged PR blob detection (default: false)
       - name: --order
@@ -41,12 +45,14 @@ commands:
       - name: --pr
         description: PR numbers to inspect, comma-separated or repeated (default: all closed PRs)
       - name: --reachability-check
-        description: "Filter out blobs reachable from a local ref (requires git fetch --all --tags). Options: none (no verification, default), local-object (local git object store). Default: none. Note: git fetch --all alone does not fetch tags unreachable from any branch."
+        description: "Filter out blobs reachable from a local ref (requires git fetch --all --tags). Options: none (no verification, default), local-object (local git object store). Default: none. Note: git fetch --all alone does not fetch tags unreachable from any branch. When --repo is specified, a bare clone cache is auto-created under ~/.cache/gh-diet-kit/."
       - name: --repo
         shorthand: -R
         description: Repository in "[HOST/]OWNER/REPO" format (default: current repository)
       - name: --sort
         description: Sort by field (size, path, pr_number)
+      - name: --strict-errors
+        description: Fail immediately on any API or git error instead of logging and continuing (default: false)
       - name: --format
         description: Output format (json)
       - name: --jq
@@ -57,15 +63,19 @@ commands:
         description: Format JSON output using a Go template
 
   - name: gh diet-kit dangling commits
-    description: List commits from squash or rebase merged PRs, commits dropped by force-pushes on PR head branches, or commits from closed unmerged PRs, that are not reachable from any normal branch or tag ref. All detection methods are enabled by default. Outputs table (default) or JSON with fields SHA, PR_NUMBER, PR_URL, SIZE (total size of unique added or modified blobs in the commit diff), MESSAGE.
+    description: List commits from squash or rebase merged PRs, commits dropped by force-pushes on PR head branches, or commits from closed unmerged PRs, that are not reachable from any normal branch or tag ref. All detection methods are enabled by default. Outputs table (default) or JSON with fields SHA, PR_NUMBER, PR_URL, SIZE (total size of unique added or modified blobs in the commit diff, human-readable), MESSAGE. Per-PR results are cached under ~/.cache/gh-diet-kit/ for resume support; use --no-cache to bypass. Use --no-git-cache to clear and re-clone the git bare clone cache.
     usage: gh diet-kit dangling commits [flags]
     flags:
       - name: --limit
         description: Maximum number of closed PRs to inspect (default: unlimited, ignored when --pr is specified)
+      - name: --no-cache
+        description: Disable per-PR result cache; always re-process all PRs (default: false)
       - name: --no-closed
         description: Disable closed unmerged PR detection (default: false)
       - name: --no-force-push
         description: Disable force-push dropped commit detection (default: false)
+      - name: --no-git-cache
+        description: Clear the git bare clone cache and re-clone before running (default: false)
       - name: --no-squash-merge
         description: Disable squash/rebase merged PR commit detection (default: false)
       - name: --order
@@ -73,12 +83,14 @@ commands:
       - name: --pr
         description: PR numbers to inspect, comma-separated or repeated (default: all closed PRs)
       - name: --reachability-check
-        description: "Verify candidates are truly unreachable. Options: none (no verification, default), default-branch (check against default branch only), branches (all branches), refs (all refs), local-object (local git object store), local-refs (local refs). Default: none."
+        description: "Verify candidates are truly unreachable. Options: none (no verification, default), default-branch (check against default branch only), branches (all branches), refs (all refs), local-object (local git object store), local-refs (local refs). Default: none. When --repo is specified, a bare clone cache is auto-created under ~/.cache/gh-diet-kit/."
       - name: --repo
         shorthand: -R
         description: Repository in "[HOST/]OWNER/REPO" format (default: current repository)
       - name: --sort
         description: Sort by field (size, pr_number)
+      - name: --strict-errors
+        description: Fail immediately on any API or git error instead of logging and continuing (default: false)
       - name: --format
         description: Output format (json)
       - name: --jq

@@ -52,11 +52,18 @@ func ghCredArgs() []string {
 // SetupLocalGitCache ensures a bare clone of the repo exists in the XDG cache and is up to date.
 // When blobless is true, --filter=blob:none is used (suitable for commit reachability only).
 // When blobless is false, a full clone is performed (required for blob content checks).
+// When noCache is true, any existing cache directory is removed before cloning.
 // Returns the path to the bare clone directory.
-func SetupLocalGitCache(ctx context.Context, repo repository.Repository, blobless bool) (string, error) {
+func SetupLocalGitCache(ctx context.Context, repo repository.Repository, blobless bool, noCache bool) (string, error) {
 	dir, err := CacheGitDir(repo, blobless)
 	if err != nil {
 		return "", err
+	}
+
+	if noCache {
+		if err := os.RemoveAll(dir); err != nil {
+			return "", fmt.Errorf("remove git cache %s: %w", dir, err)
+		}
 	}
 
 	if _, err := os.Stat(dir); os.IsNotExist(err) {
