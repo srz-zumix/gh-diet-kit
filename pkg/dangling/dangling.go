@@ -120,6 +120,10 @@ type DanglingOptions struct {
 	// GitDir, if non-empty, specifies the path to a git directory (e.g. a bare clone)
 	// to use for local reachability checks instead of the current working directory.
 	GitDir string
+	// NoCache disables the per-PR result cache. When false (default), results for
+	// each PR are written to disk and reused on subsequent runs with the same options,
+	// allowing interrupted runs to resume without re-processing already-checked PRs.
+	NoCache bool
 }
 
 // parentUnreachable reports whether any of the given parent commits has a SHA
@@ -529,6 +533,35 @@ func processChainCandidates(ctx context.Context, g *GitHubClient, repo repositor
 	return result, nil
 }
 
+// processPRCandidates applies reachability checks to the chain and force-push
+// candidate lists, then invokes visit with the confirmed dangling commits.
+// Returns nil immediately when no dangling commits are found.
+// This is the common final step shared by the cache-hit path and the normal path.
+func processPRCandidates(ctx context.Context, g *GitHubClient, repo repository.Repository, pr *github.PullRequest, chain, forcePushed []*github.RepositoryCommit, opts DanglingOptions, unreachableSHAs map[string]bool, visit danglingCommitVisitor) error {
+	chainDangling, err := processChainCandidates(ctx, g, repo, chain, opts, unreachableSHAs)
+	if err != nil {
+		if opts.StrictErrors {
+			return err
+		}
+		logger.Warn("partial result: chain reachability check failed", "pr", pr.GetNumber(), "error", err)
+	}
+	var fpDangling []*github.RepositoryCommit
+	for _, c := range forcePushed {
+		dangling, err := checkCommitDangling(ctx, g, repo, c, opts, unreachableSHAs)
+		if err != nil {
+			return fmt.Errorf("check commit reachability for %s: %w", c.GetSHA(), err)
+		}
+		if dangling {
+			fpDangling = append(fpDangling, c)
+		}
+	}
+	combined := append(chainDangling, fpDangling...)
+	if len(combined) == 0 {
+		return nil
+	}
+	return visit(pr, combined)
+}
+
 // danglingCommitVisitor is invoked for each PR with the confirmed dangling
 // commits found in that PR. The slice combines chain and force-push commits,
 // preserving their original collection order.
@@ -544,6 +577,11 @@ func iterateDanglingCommits(ctx context.Context, g *GitHubClient, repo repositor
 	// object itself, not of any individual PR.
 	unreachableSHAs := make(map[string]bool)
 
+	var cache *prCache
+	if !opts.NoCache {
+		cache = newPRCache(repo)
+	}
+
 	for i, pr := range prs {
 		if err := ctx.Err(); err != nil {
 			return err
@@ -554,6 +592,33 @@ func iterateDanglingCommits(ctx context.Context, g *GitHubClient, repo repositor
 		if pr.MergedAt != nil && opts.DisableSquashRebase && opts.DisableForcePush {
 			logger.Debug("skipping merged PR: all merged-PR methods disabled", "pr", pr.GetNumber())
 			continue
+		}
+
+		// Try to load candidates from cache using the PR number and head SHA as the key.
+		// A non-empty head SHA is required; PRs without one are processed normally.
+		headSHA := prHeadSHA(pr)
+		if headSHA != "" {
+			if cached := cache.load(pr.GetNumber(), headSHA); cached != nil {
+				logger.Debug("pr cache hit", "pr", pr.GetNumber())
+				// Filter cached candidates according to the current opts, mirroring
+				// the collection logic in listCandidatesForPR / listForcePushedOutPRCommits.
+				// Chain commits are relevant only when the detection method for this PR type
+				// is enabled in the current run.
+				var cachedChain []*github.RepositoryCommit
+				chainEnabled := (pr.MergedAt != nil && !opts.DisableSquashRebase) ||
+					(pr.MergedAt == nil && !opts.DisableClosed)
+				if chainEnabled {
+					cachedChain = reconstruct(cached.ChainCommits)
+				}
+				var cachedFP []*github.RepositoryCommit
+				if !opts.DisableForcePush {
+					cachedFP = reconstruct(cached.ForcePushCommits)
+				}
+				if err := processPRCandidates(ctx, g, repo, pr, cachedChain, cachedFP, opts, unreachableSHAs, visit); err != nil {
+					return err
+				}
+				continue
+			}
 		}
 
 		chain, err := listCandidatesForPR(ctx, g, repo, pr, opts)
@@ -579,33 +644,20 @@ func iterateDanglingCommits(ctx context.Context, g *GitHubClient, repo repositor
 		}
 
 		if len(chain) == 0 && len(forcePushed) == 0 {
+			// Cache the empty candidate list so this PR is skipped on resume.
+			if headSHA != "" {
+				cache.save(pr.GetNumber(), headSHA, nil, nil)
+			}
 			continue
 		}
 
-		chainDangling, err := processChainCandidates(ctx, g, repo, chain, opts, unreachableSHAs)
-		if err != nil {
-			if opts.StrictErrors {
-				return err
-			}
-			logger.Warn("partial result: chain reachability check failed", "pr", pr.GetNumber(), "error", err)
+		// Persist candidates before running reachability checks so an interrupted
+		// run can skip candidate collection and re-run only reachability on resume.
+		if headSHA != "" {
+			cache.save(pr.GetNumber(), headSHA, chain, forcePushed)
 		}
 
-		var fpDangling []*github.RepositoryCommit
-		for _, c := range forcePushed {
-			dangling, err := checkCommitDangling(ctx, g, repo, c, opts, unreachableSHAs)
-			if err != nil {
-				return fmt.Errorf("check commit reachability for %s: %w", c.GetSHA(), err)
-			}
-			if dangling {
-				fpDangling = append(fpDangling, c)
-			}
-		}
-
-		if len(chainDangling) == 0 && len(fpDangling) == 0 {
-			continue
-		}
-		combined := append(chainDangling, fpDangling...)
-		if err := visit(pr, combined); err != nil {
+		if err := processPRCandidates(ctx, g, repo, pr, chain, forcePushed, opts, unreachableSHAs, visit); err != nil {
 			return err
 		}
 	}

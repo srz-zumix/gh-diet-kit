@@ -30,7 +30,8 @@ func NewCommitsCmd() *cobra.Command {
 	var noClosedFlag bool
 	var reachabilityCheckFlag string
 	var strictErrorsFlag bool
-	var gitDirFlag string
+	var noCacheFlag bool
+	var noGitCacheFlag bool
 	var exporter cmdutil.Exporter
 
 	cmd := &cobra.Command{
@@ -56,17 +57,18 @@ Output fields: SHA, PR_NUMBER, PR_URL, SIZE, MESSAGE`,
 
 			// When --repo is specified with a local reachability check, auto-setup a bare clone
 			// cache so the check can run against the correct remote repository.
-			if repoFlag != "" && localCheck && gitDirFlag == "" {
+			var gitDir string
+			if repoFlag != "" && localCheck {
 				repo, err := parser.Repository(parser.RepositoryInput(repoFlag))
 				if err != nil {
 					return fmt.Errorf("failed to determine repository: %w", err)
 				}
 				blobless := true // commit reachability only; blobs not needed
-				dir, err := dangling.SetupLocalGitCache(ctx, repo, blobless)
+				dir, err := dangling.SetupLocalGitCache(ctx, repo, blobless, noGitCacheFlag)
 				if err != nil {
 					return fmt.Errorf("failed to set up local git cache for --repo: %w", err)
 				}
-				gitDirFlag = dir
+				gitDir = dir
 			}
 
 			repo, err := parser.Repository(parser.RepositoryInput(repoFlag))
@@ -90,7 +92,8 @@ Output fields: SHA, PR_NUMBER, PR_URL, SIZE, MESSAGE`,
 				DisableClosed:       noClosedFlag,
 				ReachabilityCheck:   dangling.ReachabilityCheckMode(reachabilityCheckFlag),
 				StrictErrors:        strictErrorsFlag,
-				GitDir:              gitDirFlag,
+				GitDir:              gitDir,
+				NoCache:             noCacheFlag,
 			}
 
 			logger.Info("inspecting PRs for dangling commits", "total", len(prList))
@@ -132,7 +135,8 @@ Output fields: SHA, PR_NUMBER, PR_URL, SIZE, MESSAGE`,
 	f.BoolVar(&noClosedFlag, "no-closed", false, "Disable closed unmerged PR detection")
 	cmdutil.StringEnumFlag(cmd, &reachabilityCheckFlag, "reachability-check", "", string(dangling.ReachabilityCheckNone), dangling.ReachabilityCheckModeValues, "Verify candidates are truly not reachable from a branch or tag")
 	f.BoolVar(&strictErrorsFlag, "strict-errors", false, "Fail immediately on any API or git error instead of logging and continuing")
-	f.StringVar(&gitDirFlag, "git-dir", "", "Path to a git directory for local reachability checks (default: auto-setup bare clone cache when --repo is specified)")
+	f.BoolVar(&noCacheFlag, "no-cache", false, "Disable per-PR result cache (always re-process all PRs)")
+	f.BoolVar(&noGitCacheFlag, "no-git-cache", false, "Clear the git bare clone cache and re-clone before running")
 	cmdutil.StringEnumFlag(cmd, &sortFlag, "sort", "", "", []string{"size", "pr_number"}, "Sort by field")
 	cmdutil.StringEnumFlag(cmd, &orderFlag, "order", "", "asc", []string{"asc", "desc"}, "Sort order")
 	cmdutil.AddFormatFlags(cmd, &exporter)
