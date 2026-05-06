@@ -201,8 +201,8 @@ type commitBlobInfo struct {
 // fetchCommitBlobInfo fetches the full commit diff and builds a blob SHA→size map
 // from the commit's tree. Returns (nil, nil) when the commit should be skipped
 // (404 or lenient non-fatal error). Returns (nil, err) on a fatal error.
-// When blobCache is non-nil, cached results are returned immediately and new
-// results are persisted after a successful fetch.
+// When blobCache is non-nil, cached results are returned immediately, and newly
+// fetched results are persisted only when the blob size map is available.
 func fetchCommitBlobInfo(ctx context.Context, g *GitHubClient, repo repository.Repository, sha string, opts DanglingOptions, blobCache *commitBlobCache) (*commitBlobInfo, error) {
 	if cached := blobCache.load(sha); cached != nil {
 		logger.Debug("commit blob cache hit", "sha", sha)
