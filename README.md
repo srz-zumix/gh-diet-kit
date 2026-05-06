@@ -65,7 +65,7 @@ gh diet-kit dangling blobs [flags]
 
 List commits that originate from squash or rebase merged pull requests, commits dropped by force-pushes on PR head branches, or commits from closed unmerged pull requests, and are not reachable from any normal branch or tag ref on the remote. All detection methods are enabled by default.
 
-Output fields: `SHA`, `PR_NUMBER`, `PR_URL`, `SIZE`, `MESSAGE`. `SIZE` is the total of all blob sizes in the commit tree.
+Output fields: `SHA`, `PR_NUMBER`, `PR_URL`, `SIZE`, `MESSAGE`. `SIZE` is the sum of sizes of unique blobs added or modified in the commit diff.
 
 ```sh
 gh diet-kit dangling commits [flags]
