@@ -151,7 +151,7 @@ commands:
         description: Minimum file size to report as an LFS candidate (e.g. 50MB, 1GB, 10000000; default 10MB)
 
   - name: gh diet-kit lfs estimate
-    description: Estimate how much git object storage would be freed by migrating large files to Git LFS. When path arguments are given, only those files are estimated regardless of --threshold. Outputs table (default) or JSON with fields PATH, CURRENT_SIZE, ESTIMATED_SAVING (and VERSIONS, ESTIMATED_TOTAL_SIZE when --scan-commits is used). Default threshold is 10MB.
+    description: Estimate how much git object storage would be freed by migrating large files to Git LFS. When path arguments are given, only those files are estimated regardless of --threshold. The default table output shows PATH, CURRENT_SIZE, and ESTIMATED_SAVING, and also shows VERSIONS and ESTIMATED_TOTAL_SIZE when --scan-commits is used. JSON or template output includes those fields plus per-estimate metadata such as sha and version_count, and exported output can also include a top-level summary object. Default threshold is 10MB.
     usage: gh diet-kit lfs estimate [path...] [flags]
     flags:
       - name: --format
