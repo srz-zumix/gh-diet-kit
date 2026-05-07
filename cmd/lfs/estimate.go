@@ -79,8 +79,12 @@ When using --format json, the output is an object with "estimates" and
 
 			if len(args) > 0 {
 				estimates, summary, err = lfs.EstimateMigrationSavingsForPaths(ctx, g, repo, refFlag, args, scanCommitsFlag)
-				if err != nil {
+				interrupted := errors.Is(err, context.Canceled)
+				if err != nil && !interrupted {
 					return fmt.Errorf("failed to estimate LFS migration savings: %w", err)
+				}
+				if interrupted {
+					logger.Warn("interrupted: showing partial results", "found", len(estimates))
 				}
 			} else {
 				threshold, parseErr := lfs.ParseSize(thresholdFlag)
