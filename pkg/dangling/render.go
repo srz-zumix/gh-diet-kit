@@ -155,6 +155,72 @@ func (r *Renderer) RenderDanglingBlobs(blobs []*DanglingBlob, headers []string) 
 	return table.Render()
 }
 
+type noPRBranchFieldGetter func(b *NoPRBranch) string
+type noPRBranchFieldGetters struct {
+	Func map[string]noPRBranchFieldGetter
+}
+
+func newNoPRBranchFieldGetters() *noPRBranchFieldGetters {
+	return &noPRBranchFieldGetters{
+		Func: map[string]noPRBranchFieldGetter{
+			"BRANCH": func(b *NoPRBranch) string {
+				return b.Name
+			},
+			"COMMIT_SHA": func(b *NoPRBranch) string {
+				return b.CommitSHA
+			},
+			"AHEAD_COUNT": func(b *NoPRBranch) string {
+				if b.AheadCount < 0 {
+					return ""
+				}
+				return fmt.Sprintf("%d", b.AheadCount)
+			},
+			"UNIQUE_SIZE": func(b *NoPRBranch) string {
+				if b.UniqueBlobSize == nil {
+					return ""
+				}
+				return humanize.Bytes(*b.UniqueBlobSize)
+			},
+		},
+	}
+}
+
+func (g *noPRBranchFieldGetters) getField(b *NoPRBranch, field string) string {
+	field = strings.ToUpper(field)
+	if getter, ok := g.Func[field]; ok {
+		return getter(b)
+	}
+	return ""
+}
+
+// RenderNoPRBranches renders a table of branches without pull requests.
+// When an exporter is configured (e.g. --format json), the raw slice is exported instead.
+func (r *Renderer) RenderNoPRBranches(branches []*NoPRBranch, headers []string) error {
+	if r.HasExporter() {
+		return r.RenderExportedData(branches)
+	}
+
+	if len(branches) == 0 {
+		r.WriteLine("No branches without pull requests found.")
+		return nil
+	}
+
+	if len(headers) == 0 {
+		headers = []string{"BRANCH", "COMMIT_SHA", "AHEAD_COUNT", "UNIQUE_SIZE"}
+	}
+
+	getter := newNoPRBranchFieldGetters()
+	table := r.NewTableWriter(headers)
+	for _, b := range branches {
+		row := make([]string, len(headers))
+		for i, header := range headers {
+			row[i] = getter.getField(b, header)
+		}
+		table.Append(row)
+	}
+	return table.Render()
+}
+
 // firstLineOf returns the first line of a potentially multi-line string.
 func firstLineOf(s string) string {
 	for i, r := range s {
