@@ -83,10 +83,10 @@ func newLFSEstimateFieldGetters() map[string]lfsEstimateFieldGetter {
 			return humanize.Comma(int64(e.VersionCount))
 		},
 		"ESTIMATED_TOTAL_SIZE": func(e *LFSSavingEstimate) string {
-			return humanize.Bytes(uint64(e.EstimatedTotalSize))
+			return humanize.Bytes(e.EstimatedTotalSize)
 		},
 		"ESTIMATED_SAVING": func(e *LFSSavingEstimate) string {
-			return humanize.Bytes(uint64(e.EstimatedSaving))
+			return humanize.Bytes(e.EstimatedSaving)
 		},
 	}
 }
@@ -136,11 +136,11 @@ func (r *Renderer) RenderLFSSavingEstimates(estimates []*LFSSavingEstimate, summ
 		r.WriteLine("")
 		r.WriteLine("Summary:")
 		r.WriteLine("  Candidates:       " + humanize.Comma(int64(summary.CandidateCount)))
-		r.WriteLine("  Current size:     " + humanize.Bytes(uint64(summary.TotalCurrentSize)))
+		r.WriteLine("  Current size:     " + humanize.Bytes(summary.TotalCurrentSize))
 		if summary.HistoryScanned {
-			r.WriteLine("  Est. total size:  " + humanize.Bytes(uint64(summary.TotalEstimatedSize)))
+			r.WriteLine("  Est. total size:  " + humanize.Bytes(summary.TotalEstimatedSize))
 		}
-		r.WriteLine("  Est. git saving:  " + humanize.Bytes(uint64(summary.TotalEstimatedSaving)))
+		r.WriteLine("  Est. git saving:  " + humanize.Bytes(summary.TotalEstimatedSaving))
 	}
 	return nil
 }

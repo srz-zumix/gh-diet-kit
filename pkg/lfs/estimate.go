@@ -29,10 +29,10 @@ type LFSSavingEstimate struct {
 	VersionCount int `json:"version_count"`
 	// EstimatedTotalSize is the estimated total blob size across all versions
 	// (CurrentSize * VersionCount — a rough approximation).
-	EstimatedTotalSize int64 `json:"estimated_total_size"`
+	EstimatedTotalSize uint64 `json:"estimated_total_size"`
 	// EstimatedSaving is the estimated reduction in git object storage
 	// (EstimatedTotalSize minus the LFS pointer overhead).
-	EstimatedSaving int64 `json:"estimated_saving"`
+	EstimatedSaving uint64 `json:"estimated_saving"`
 }
 
 // LFSMigrationSummary contains aggregate statistics for a migration estimate run.
@@ -40,11 +40,11 @@ type LFSMigrationSummary struct {
 	// CandidateCount is the number of files that exceed the size threshold.
 	CandidateCount int `json:"candidate_count"`
 	// TotalCurrentSize is the sum of current blob sizes for all candidates.
-	TotalCurrentSize int64 `json:"total_current_size"`
+	TotalCurrentSize uint64 `json:"total_current_size"`
 	// TotalEstimatedSize is the sum of estimated total historic blob sizes.
-	TotalEstimatedSize int64 `json:"total_estimated_size"`
+	TotalEstimatedSize uint64 `json:"total_estimated_size"`
 	// TotalEstimatedSaving is the estimated total reduction in git object storage.
-	TotalEstimatedSaving int64 `json:"total_estimated_saving"`
+	TotalEstimatedSaving uint64 `json:"total_estimated_saving"`
 	// HistoryScanned reports whether git history was included in the estimate.
 	HistoryScanned bool `json:"history_scanned"`
 }
@@ -62,9 +62,12 @@ func estimateForFile(ctx context.Context, g *GitHubClient, repo repository.Repos
 		}
 	}
 
-	estimatedTotal := int64(size) * int64(versionCount)
-	pointerOverhead := int64(lfsPointerSize) * int64(versionCount)
-	estimatedSaving := max(estimatedTotal-pointerOverhead, 0)
+	estimatedTotal := size * uint64(versionCount)
+	pointerOverhead := uint64(lfsPointerSize) * uint64(versionCount)
+	var estimatedSaving uint64
+	if estimatedTotal > pointerOverhead {
+		estimatedSaving = estimatedTotal - pointerOverhead
+	}
 
 	return &LFSSavingEstimate{
 		Path:               path,
@@ -123,7 +126,7 @@ func buildSummary(estimates []*LFSSavingEstimate, historyScanned bool) *LFSMigra
 		HistoryScanned: historyScanned,
 	}
 	for _, e := range estimates {
-		s.TotalCurrentSize += int64(e.CurrentSize)
+		s.TotalCurrentSize += e.CurrentSize
 		s.TotalEstimatedSize += e.EstimatedTotalSize
 		s.TotalEstimatedSaving += e.EstimatedSaving
 	}
