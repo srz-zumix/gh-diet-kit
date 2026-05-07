@@ -17,7 +17,7 @@ func NewLFSCmd() *cobra.Command {
 		Short: "Commands for Git LFS analysis",
 		Long: `Commands for analyzing Git Large File Storage (LFS) in a repository.
 
-Use the subcommands to detect files that should be tracked by LFS and estimate LFS usage.`,
+Use the subcommands to detect files that should be tracked by LFS and estimate git storage savings from migrating files to LFS.`,
 	}
 	cmd.AddCommand(lfscmd.NewDetectCmd())
 	cmd.AddCommand(lfscmd.NewEstimateCmd())
