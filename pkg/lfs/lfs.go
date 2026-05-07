@@ -11,10 +11,6 @@ import (
 	"github.com/srz-zumix/go-gh-extension/pkg/logger"
 )
 
-// DefaultSizeThreshold is the default file size threshold (50 MiB) above which
-// a blob is reported as an LFS candidate.
-const DefaultSizeThreshold uint64 = 50 * 1024 * 1024
-
 // ParseSize parses a human-readable size string into a byte count.
 // Accepts a plain integer (bytes) or a value with a unit suffix: KB, MB, GB, TB
 // (case-insensitive, e.g. "50MB", "1gb", "10000000").
