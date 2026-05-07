@@ -1,6 +1,6 @@
 # gh-diet-kit
 
-A slim GitHub CLI extension based on [gh-team-kit](https://github.com/srz-zumix/gh-team-kit), providing only the essential core commands: `root`, `completion`, and `skills`, plus commands for inspecting dangling git objects on the remote.
+Providing commands for inspecting dangling git objects on the remote and detecting or estimating storage savings from Git LFS migration.
 
 ## Installation
 
@@ -8,17 +8,28 @@ A slim GitHub CLI extension based on [gh-team-kit](https://github.com/srz-zumix/
 gh extension install srz-zumix/gh-diet-kit
 ```
 
-## Usage
+## Shell Completion
+
+**Workaround Available!** While gh CLI doesn't natively support extension completion, we provide a patch script that enables it.
+
+**Prerequisites:** Before setting up gh-diet-kit completion, ensure gh CLI completion is configured for your shell. See [gh completion documentation](https://cli.github.com/manual/gh_completion) for setup instructions.
+
+For detailed installation instructions and setup for each shell, see the [Shell Completion Guide](https://github.com/srz-zumix/go-gh-extension/blob/main/docs/shell-completion.md).
+
+## Agent Skills
+
+gh-diet-kit bundles agent skills for AI. Use the `skills` subcommand to install and manage them.
 
 ```sh
-gh diet-kit [flags]
-gh diet-kit [command]
+gh diet-kit skills [subcommand] [args...]
 ```
+
+For details, see [Songmu/skillsmith](https://github.com/Songmu/skillsmith).
 
 ### Flags
 
 | Flag | Shorthand | Description |
-|------|-----------|-------------|
+| ------ | ----------- | ------------- |
 | `--log-level` | `-L` | Set log level (e.g. `debug`, `info`, `warn`, `error`) |
 | `--read-only` | | Run in read-only mode (prevent write operations) |
 | `--version` | | Print the version number |
@@ -47,7 +58,7 @@ gh diet-kit dangling blobs [flags]
 ```
 
 | Flag | Shorthand | Default | Description |
-|------|-----------|---------|-------------|
+| ------ | ----------- | ------- | ------------- |
 | `--clear-cache` | | `false` | Clear the per-PR and commit blob cache before running, then use cache normally |
 | `--clear-git-cache` | | `false` | Clear the git bare clone cache and re-clone before running |
 | `--format` | | table | Output format: `json` |
@@ -76,7 +87,7 @@ gh diet-kit dangling commits [flags]
 ```
 
 | Flag | Shorthand | Default | Description |
-|------|-----------|---------|-------------|
+| ------ | ----------- | ------- | ------------- |
 | `--clear-cache` | | `false` | Clear the per-PR and commit blob cache before running, then use cache normally |
 | `--clear-git-cache` | | `false` | Clear the git bare clone cache and re-clone before running |
 | `--format` | | table | Output format: `json` |
@@ -109,17 +120,62 @@ gh diet-kit dangling local [flags]
 ```
 
 | Flag | Shorthand | Default | Description |
-|------|-----------|---------|-------------|
+| ------ | ----------- | ------- | ------------- |
 | `--no-reflogs` | | `false` | Ignore reflog entries when determining local reachability |
 | `--repo` | `-R` | current repository | Repository in `[HOST/]OWNER/REPO` format |
 | `--format` | | table | Output format: `json` |
 | `--jq` | `-q` | | Filter JSON output using a jq expression |
 | `--template` | `-t` | | Format JSON output using a Go template |
 
-#### skills
+#### lfs detect
 
-Show available skills documentation embedded in the extension.
+Detect files in the repository whose size exceeds a threshold and are not currently stored as Git LFS objects. Files properly tracked by LFS appear as small pointer files (~134 bytes) in the git tree and are therefore not reported.
+
+The minimum allowed threshold is 135 bytes (one byte above the LFS pointer size). Values at or below the pointer size would cause genuine LFS pointer blobs to be reported as candidates.
+
+Output fields: `PATH`, `SIZE`, `SHA`.
 
 ```sh
-gh diet-kit skills
+gh diet-kit lfs detect [flags]
 ```
+
+| Flag | Shorthand | Default | Description |
+| ------ | ----------- | ------- | ------------- |
+| `--format` | | table | Output format: `json` |
+| `--jq` | `-q` | | Filter JSON output using a jq expression |
+| `--order` | | `asc` | Sort order: `asc` or `desc` |
+| `--ref` | | repository default branch | Branch, tag, or commit SHA to inspect |
+| `--repo` | `-R` | current repository | Repository in `[HOST/]OWNER/REPO` format |
+| `--sort` | | | Sort by field: `size`, `path` |
+| `--template` | `-t` | | Format JSON output using a Go template |
+| `--threshold` | | `10MB` | Minimum file size to report as an LFS candidate (minimum: 135 bytes; e.g. `50MB`, `1GB`, `10000000`) |
+
+#### lfs estimate
+
+Estimate how much git object storage would be freed by migrating large files to Git LFS.
+
+When `path` arguments are given, only those specific files are estimated regardless of `--threshold`. When no paths are given, the entire repository tree is scanned and files exceeding `--threshold` are reported.
+
+For each candidate the estimated saving is `estimated_total_size - (lfs_pointer_size × version_count)` where `lfs_pointer_size ≈ 134` bytes. By default only the current tree is inspected (`version_count = 1`). Use `--scan-commits` to count historic versions; the estimated total size is approximated as `current_size × version_count`.
+
+Default table columns (without `--scan-commits`): `PATH`, `CURRENT_SIZE`, `ESTIMATED_SAVING`
+
+Default table columns (with `--scan-commits`): `PATH`, `CURRENT_SIZE`, `VERSIONS`, `ESTIMATED_TOTAL_SIZE`, `ESTIMATED_SAVING`
+
+When `--format json` is used, the exported object includes JSON fields for the estimate data, including `path`, `current_size`, `estimated_saving`, `sha`, and `version_count`. With `--scan-commits`, the JSON output also includes `estimated_total_size`.
+
+```sh
+gh diet-kit lfs estimate [path...] [flags]
+```
+
+| Flag | Shorthand | Default | Description |
+| ------ | ----------- | ------- | ------------- |
+| `--format` | | table | Output format: `json` |
+| `--jq` | `-q` | | Filter JSON output using a jq expression |
+| `--order` | | `asc` | Sort order: `asc` or `desc` |
+| `--ref` | | repository default branch | Branch, tag, or commit SHA to inspect |
+| `--repo` | `-R` | current repository | Repository in `[HOST/]OWNER/REPO` format |
+| `--scan-commits` | | `0` | Scan up to N commits per file to count historic versions (`0` = current tree only, negative = all commits) |
+| `--sort` | | | Sort by field: `saving`, `size`, `path`, `versions` |
+| `--template` | `-t` | | Format JSON output using a Go template |
+| `--threshold` | | `10MB` | Minimum file size to include in the estimate; must be at least 135 bytes (ignored when path arguments are given) |

@@ -8,7 +8,7 @@ require (
 	github.com/dustin/go-humanize v1.0.1
 	github.com/google/go-github/v84 v84.0.0
 	github.com/spf13/cobra v1.10.2
-	github.com/srz-zumix/go-gh-extension v0.4.34
+	github.com/srz-zumix/go-gh-extension v0.4.36
 )
 
 require (

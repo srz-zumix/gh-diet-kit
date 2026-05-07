@@ -1,6 +1,6 @@
 ---
 name: gh-diet-kit
-description: gh-diet-kit is a slim GitHub CLI extension based on gh-team-kit. It provides core extension utilities including shell completion, skills documentation, and commands to find dangling git objects (commits and blobs) on a remote GitHub repository. Use when you need a minimal GitHub CLI extension scaffold or when inspecting objects not reachable from normal branch/tag refs.
+description: gh-diet-kit is a slim GitHub CLI extension based on gh-team-kit. It provides core extension utilities including shell completion, skills documentation, commands to find dangling git objects (commits and blobs) on a remote GitHub repository, and LFS commands to detect large files and estimate migration savings. Use when you need a minimal GitHub CLI extension scaffold or when inspecting objects not reachable from normal branch/tag refs.
 license: MIT
 compatibility:
   - gh
@@ -125,6 +125,56 @@ commands:
   - name: gh diet-kit skills
     description: Show available skills documentation for gh-diet-kit.
     usage: gh diet-kit skills [flags]
+
+  - name: gh diet-kit lfs detect
+    description: Detect files in the repository whose size exceeds a threshold and are not currently stored as Git LFS objects. Outputs table (default) or JSON with fields PATH, SIZE, SHA. Default threshold is 10MB. The minimum allowed threshold is 135 bytes (one byte above the LFS pointer size of 134 bytes); values at or below the pointer size would cause genuine LFS pointer blobs to be reported as candidates.
+    usage: gh diet-kit lfs detect [flags]
+    flags:
+      - name: --format
+        description: Output format (json)
+      - name: --jq
+        shorthand: -q
+        description: Filter JSON output using a jq expression
+      - name: --order
+        description: Sort order (asc or desc, default asc)
+      - name: --ref
+        description: Branch, tag, or commit SHA to inspect (default: repository default branch)
+      - name: --repo
+        shorthand: -R
+        description: Repository in "[HOST/]OWNER/REPO" format (default: current repository)
+      - name: --sort
+        description: Sort by field (size, path)
+      - name: --template
+        shorthand: -t
+        description: Format JSON output using a Go template
+      - name: --threshold
+        description: Minimum file size to report as an LFS candidate; must be at least 135 bytes (e.g. 50MB, 1GB, 10000000; default 10MB)
+
+  - name: gh diet-kit lfs estimate
+    description: Estimate how much git object storage would be freed by migrating large files to Git LFS. When path arguments are given, only those files are estimated regardless of --threshold. The default table output shows PATH, CURRENT_SIZE, and ESTIMATED_SAVING, and also shows VERSIONS and ESTIMATED_TOTAL_SIZE when --scan-commits is used. JSON or template output includes those fields plus per-estimate metadata such as sha and version_count, and exported output can also include a top-level summary object. Default threshold is 10MB.
+    usage: gh diet-kit lfs estimate [path...] [flags]
+    flags:
+      - name: --format
+        description: Output format (json)
+      - name: --jq
+        shorthand: -q
+        description: Filter JSON output using a jq expression
+      - name: --order
+        description: Sort order (asc or desc, default asc)
+      - name: --ref
+        description: Branch, tag, or commit SHA to inspect (default: repository default branch)
+      - name: --repo
+        shorthand: -R
+        description: Repository in "[HOST/]OWNER/REPO" format (default: current repository)
+      - name: --scan-commits
+        description: Scan up to N commits per file to count historic versions (0 = current tree only, negative = all commits; default 0)
+      - name: --sort
+        description: Sort by field (saving, size, path, versions)
+      - name: --template
+        shorthand: -t
+        description: Format JSON output using a Go template
+      - name: --threshold
+        description: Minimum file size to include in the estimate; must be at least 135 bytes (ignored when path arguments are given; default 10MB)
 ---
 
 # gh-diet-kit
@@ -140,6 +190,9 @@ gh diet-kit
 │   ├── blobs                   # List dangling blobs
 │   ├── commits                 # List dangling commits
 │   └── local                   # List local commits that exist on remote but are unreachable locally
+├── lfs                         # Git LFS utilities
+│   ├── detect                  # Detect large files that should be tracked by LFS
+│   └── estimate                # Estimate storage savings from LFS migration
 └── skills                      # Show embedded skills documentation
 ```
 
@@ -218,4 +271,36 @@ Show skills documentation embedded in the extension.
 
 ```sh
 gh diet-kit skills
+```
+
+### `gh diet-kit lfs detect`
+
+Detect files in the repository whose size exceeds a threshold and are not currently stored as Git LFS objects. Files properly tracked by LFS appear as small pointer files (~134 bytes) in the git tree and are therefore not reported.
+
+The minimum allowed threshold is 135 bytes (one byte above the LFS pointer size).
+
+Output fields: `PATH`, `SIZE`, `SHA`.
+
+```sh
+gh diet-kit lfs detect -R owner/repo
+gh diet-kit lfs detect -R owner/repo --threshold 50MB
+gh diet-kit lfs detect -R owner/repo --sort size --order desc
+gh diet-kit lfs detect -R owner/repo --format json | jq '.[] | .path'
+```
+
+### `gh diet-kit lfs estimate`
+
+Estimate how much git object storage would be freed by migrating large files to Git LFS.
+
+When path arguments are given, only those specific files are estimated regardless of `--threshold`. Use `--scan-commits` to count historic versions; the estimated total size is approximated as `current_size × version_count`.
+
+Output fields (without `--scan-commits`): `PATH`, `CURRENT_SIZE`, `ESTIMATED_SAVING`
+
+Output fields (with `--scan-commits`): `PATH`, `CURRENT_SIZE`, `VERSIONS`, `ESTIMATED_TOTAL_SIZE`, `ESTIMATED_SAVING`
+
+```sh
+gh diet-kit lfs estimate -R owner/repo
+gh diet-kit lfs estimate -R owner/repo --threshold 50MB --scan-commits -1
+gh diet-kit lfs estimate -R owner/repo path/to/large/file.bin
+gh diet-kit lfs estimate -R owner/repo --format json | jq '.estimates[] | .estimated_saving'
 ```
