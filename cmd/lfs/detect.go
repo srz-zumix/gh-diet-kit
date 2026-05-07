@@ -36,7 +36,7 @@ repository's default branch.
 
 Use --threshold to change the size cutoff. The value can be a plain
 integer (bytes) or use a unit suffix: KB, MB, GB (e.g. 50MB, 1GB).
-Default: 50MB.
+Default: 10MB.
 
 The tree is traversed recursively; for large repositories this may require
 multiple API calls. Interrupt with Ctrl+C to stop early.
@@ -55,7 +55,7 @@ Output fields: PATH, SIZE, SHA`,
 				return fmt.Errorf("failed to create GitHub client: %w", err)
 			}
 
-			threshold, err := parseSize(thresholdFlag)
+			threshold, err := lfs.ParseSize(thresholdFlag)
 			if err != nil {
 				return fmt.Errorf("invalid --threshold value %q: %w", thresholdFlag, err)
 			}
@@ -80,46 +80,9 @@ Output fields: PATH, SIZE, SHA`,
 	f := cmd.Flags()
 	f.StringVarP(&repoFlag, "repo", "R", "", "Repository in \"[HOST/]OWNER/REPO\" format (default: current repository)")
 	f.StringVar(&refFlag, "ref", "", "Branch, tag, or commit SHA to inspect (default: repository default branch)")
-	f.StringVar(&thresholdFlag, "threshold", "50MB", "Minimum file size to report as an LFS candidate (e.g. 50MB, 1GB, 10000000)")
+	f.StringVar(&thresholdFlag, "threshold", "10MB", "Minimum file size to report as an LFS candidate (e.g. 50MB, 1GB, 10000000)")
 	cmdutil.StringEnumFlag(cmd, &sortFlag, "sort", "", "", []string{"size", "path"}, "Sort by field: size, path")
 	cmdutil.StringEnumFlag(cmd, &orderFlag, "order", "", "asc", []string{"asc", "desc"}, "Sort order: asc, desc")
 	cmdutil.AddFormatFlags(cmd, &exporter)
 	return cmd
-}
-
-// parseSize parses a human-readable size string into a byte count.
-// Accepts a plain integer (bytes) or a value with a unit suffix: KB, MB, GB, TB
-// (case-insensitive, e.g. "50MB", "1gb", "10000000").
-func parseSize(s string) (int64, error) {
-	s = strings.TrimSpace(s)
-	upper := strings.ToUpper(s)
-
-	// Check suffixes from longest to shortest to avoid "B" matching inside "MB".
-	suffixes := []struct {
-		suffix string
-		mult   int64
-	}{
-		{"TB", 1024 * 1024 * 1024 * 1024},
-		{"GB", 1024 * 1024 * 1024},
-		{"MB", 1024 * 1024},
-		{"KB", 1024},
-		{"B", 1},
-	}
-	for _, e := range suffixes {
-		if strings.HasSuffix(upper, e.suffix) {
-			numStr := strings.TrimSpace(s[:len(s)-len(e.suffix)])
-			var base int64
-			if _, err := fmt.Sscanf(numStr, "%d", &base); err != nil {
-				return 0, fmt.Errorf("cannot parse numeric part %q in %q", numStr, s)
-			}
-			return base * e.mult, nil
-		}
-	}
-
-	// Plain integer (bytes)
-	var n int64
-	if _, err := fmt.Sscanf(s, "%d", &n); err != nil {
-		return 0, fmt.Errorf("unsupported size format %q: use a plain integer (bytes) or a suffix: KB, MB, GB, TB", s)
-	}
-	return n, nil
 }

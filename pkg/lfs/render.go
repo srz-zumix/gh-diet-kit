@@ -29,7 +29,7 @@ func newLFSCandidateFieldGetters() map[string]lfsCandidateFieldGetter {
 			return c.Path
 		},
 		"SIZE": func(c *LFSCandidate) string {
-			return humanize.Bytes(uint64(c.Size))
+			return humanize.Bytes(c.Size)
 		},
 	}
 }
@@ -144,4 +144,3 @@ func (r *Renderer) RenderLFSSavingEstimates(estimates []*LFSSavingEstimate, summ
 	}
 	return nil
 }
-

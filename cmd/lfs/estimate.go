@@ -48,7 +48,7 @@ Use --ref to inspect a specific branch, tag, or commit SHA instead of the
 repository's default branch.
 
 Use --threshold to change the size cutoff (e.g. 50MB, 1GB, 10000000).
-Default: 50MB. Ignored when path arguments are given.
+Default: 10MB. Ignored when path arguments are given.
 
 Output fields (without --scan-commits): PATH, CURRENT_SIZE, ESTIMATED_SAVING
 Output fields (with --scan-commits):    PATH, CURRENT_SIZE, VERSIONS,
@@ -75,7 +75,7 @@ Output fields (with --scan-commits):    PATH, CURRENT_SIZE, VERSIONS,
 					return fmt.Errorf("failed to estimate LFS migration savings: %w", err)
 				}
 			} else {
-				threshold, parseErr := parseSize(thresholdFlag)
+				threshold, parseErr := lfs.ParseSize(thresholdFlag)
 				if parseErr != nil {
 					return fmt.Errorf("invalid --threshold value %q: %w", thresholdFlag, parseErr)
 				}
@@ -100,7 +100,7 @@ Output fields (with --scan-commits):    PATH, CURRENT_SIZE, VERSIONS,
 	f := cmd.Flags()
 	f.StringVarP(&repoFlag, "repo", "R", "", "Repository in \"[HOST/]OWNER/REPO\" format (default: current repository)")
 	f.StringVar(&refFlag, "ref", "", "Branch, tag, or commit SHA to inspect (default: repository default branch)")
-	f.StringVar(&thresholdFlag, "threshold", "50MB", "Minimum file size to include in the estimate (e.g. 50MB, 1GB, 10000000)")
+	f.StringVar(&thresholdFlag, "threshold", "10MB", "Minimum file size to include in the estimate (e.g. 50MB, 1GB, 10000000)")
 	f.IntVar(&scanCommitsFlag, "scan-commits", 0, "Scan up to N commits per file to count historic versions (0 = current tree only, negative = all commits)")
 	cmdutil.StringEnumFlag(cmd, &sortFlag, "sort", "", "", []string{"saving", "size", "path", "versions"}, "Sort by field: saving, size, path, versions")
 	cmdutil.StringEnumFlag(cmd, &orderFlag, "order", "", "asc", []string{"asc", "desc"}, "Sort order: asc, desc")

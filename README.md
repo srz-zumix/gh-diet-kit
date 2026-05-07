@@ -123,3 +123,52 @@ Show available skills documentation embedded in the extension.
 ```sh
 gh diet-kit skills
 ```
+
+#### lfs detect
+
+Detect files in the repository whose size exceeds a threshold and are not currently stored as Git LFS objects. Files properly tracked by LFS appear as small pointer files (~130 bytes) in the git tree and are therefore not reported.
+
+Output fields: `PATH`, `SIZE`, `SHA`.
+
+```sh
+gh diet-kit lfs detect [flags]
+```
+
+| Flag | Shorthand | Default | Description |
+|------|-----------|---------|-------------|
+| `--format` | | table | Output format: `json` |
+| `--jq` | `-q` | | Filter JSON output using a jq expression |
+| `--order` | | `asc` | Sort order: `asc` or `desc` |
+| `--ref` | | repository default branch | Branch, tag, or commit SHA to inspect |
+| `--repo` | `-R` | current repository | Repository in `[HOST/]OWNER/REPO` format |
+| `--sort` | | | Sort by field: `size`, `path` |
+| `--template` | `-t` | | Format JSON output using a Go template |
+| `--threshold` | | `10MB` | Minimum file size to report as an LFS candidate (e.g. `50MB`, `1GB`, `10000000`) |
+
+#### lfs estimate
+
+Estimate how much git object storage would be freed by migrating large files to Git LFS.
+
+When `path` arguments are given, only those specific files are estimated regardless of `--threshold`. When no paths are given, the entire repository tree is scanned and files exceeding `--threshold` are reported.
+
+For each candidate the estimated saving is `estimated_total_size - (lfs_pointer_size × version_count)` where `lfs_pointer_size ≈ 134` bytes. By default only the current tree is inspected (`version_count = 1`). Use `--scan-commits` to count historic versions; the estimated total size is approximated as `current_size × version_count`.
+
+Output fields (without `--scan-commits`): `PATH`, `CURRENT_SIZE`, `ESTIMATED_SAVING`
+
+Output fields (with `--scan-commits`): `PATH`, `CURRENT_SIZE`, `VERSIONS`, `ESTIMATED_TOTAL_SIZE`, `ESTIMATED_SAVING`
+
+```sh
+gh diet-kit lfs estimate [path...] [flags]
+```
+
+| Flag | Shorthand | Default | Description |
+|------|-----------|---------|-------------|
+| `--format` | | table | Output format: `json` |
+| `--jq` | `-q` | | Filter JSON output using a jq expression |
+| `--order` | | `asc` | Sort order: `asc` or `desc` |
+| `--ref` | | repository default branch | Branch, tag, or commit SHA to inspect |
+| `--repo` | `-R` | current repository | Repository in `[HOST/]OWNER/REPO` format |
+| `--scan-commits` | | `0` | Scan up to N commits per file to count historic versions (`0` = current tree only, negative = all commits) |
+| `--sort` | | | Sort by field: `saving`, `size`, `path`, `versions` |
+| `--template` | `-t` | | Format JSON output using a Go template |
+| `--threshold` | | `10MB` | Minimum file size to include in the estimate (ignored when path arguments are given) |

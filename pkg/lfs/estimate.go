@@ -23,7 +23,7 @@ type LFSSavingEstimate struct {
 	// SHA is the blob SHA of the current version.
 	SHA string `json:"sha"`
 	// CurrentSize is the byte size of the current blob.
-	CurrentSize int `json:"current_size"`
+	CurrentSize uint64 `json:"current_size"`
 	// VersionCount is the number of commit versions found in history.
 	// 1 means only the current tree version was inspected (no history scan).
 	VersionCount int `json:"version_count"`
@@ -51,7 +51,7 @@ type LFSMigrationSummary struct {
 
 // estimateForFile builds a single LFSSavingEstimate for path/sha/size,
 // optionally scanning git history up to scanCommitsDepth commits.
-func estimateForFile(ctx context.Context, g *GitHubClient, repo repository.Repository, ref, path, sha string, size int, scanCommitsDepth int) (*LFSSavingEstimate, error) {
+func estimateForFile(ctx context.Context, g *GitHubClient, repo repository.Repository, ref, path, sha string, size uint64, scanCommitsDepth int) (*LFSSavingEstimate, error) {
 	versionCount := 1
 	if scanCommitsDepth != 0 {
 		n, cntErr := countFileVersions(ctx, g, repo, ref, path, scanCommitsDepth)
@@ -89,7 +89,7 @@ func EstimateMigrationSavings(
 	g *GitHubClient,
 	repo repository.Repository,
 	ref string,
-	threshold int64,
+	threshold uint64,
 	scanCommitsDepth int,
 ) ([]*LFSSavingEstimate, *LFSMigrationSummary, error) {
 	candidates, err := DetectLFSCandidates(ctx, g, repo, ref, threshold)
@@ -163,7 +163,7 @@ func EstimateMigrationSavingsForPaths(
 			return estimates, nil, fmt.Errorf("path %q is a directory or was not found", path)
 		}
 
-		e, err := estimateForFile(ctx, g, repo, ref, path, fileContent.GetSHA(), fileContent.GetSize(), scanCommitsDepth)
+		e, err := estimateForFile(ctx, g, repo, ref, path, fileContent.GetSHA(), uint64(fileContent.GetSize()), scanCommitsDepth)
 		if err != nil {
 			return estimates, nil, err
 		}

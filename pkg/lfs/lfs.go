@@ -13,7 +13,48 @@ import (
 
 // DefaultSizeThreshold is the default file size threshold (50 MiB) above which
 // a blob is reported as an LFS candidate.
-const DefaultSizeThreshold int64 = 50 * 1024 * 1024
+const DefaultSizeThreshold uint64 = 50 * 1024 * 1024
+
+// ParseSize parses a human-readable size string into a byte count.
+// Accepts a plain integer (bytes) or a value with a unit suffix: KB, MB, GB, TB
+// (case-insensitive, e.g. "50MB", "1gb", "10000000").
+func ParseSize(s string) (uint64, error) {
+	s = strings.TrimSpace(s)
+	upper := strings.ToUpper(s)
+
+	// Check suffixes from longest to shortest to avoid "B" matching inside "MB".
+	suffixes := []struct {
+		suffix string
+		mult   uint64
+	}{
+		{"TB", 1024 * 1024 * 1024 * 1024},
+		{"GB", 1024 * 1024 * 1024},
+		{"MB", 1024 * 1024},
+		{"KB", 1024},
+		{"B", 1},
+	}
+	for _, e := range suffixes {
+		if strings.HasSuffix(upper, e.suffix) {
+			numStr := strings.TrimSpace(s[:len(s)-len(e.suffix)])
+			var base uint64
+			if _, err := fmt.Sscanf(numStr, "%d", &base); err != nil {
+				return 0, fmt.Errorf("cannot parse numeric part %q in %q", numStr, s)
+			}
+			// Detect multiplication overflow: base*mult > math.MaxUint64.
+			if e.mult > 1 && base > ^uint64(0)/e.mult {
+				return 0, fmt.Errorf("size value %q overflows uint64", s)
+			}
+			return base * e.mult, nil
+		}
+	}
+
+	// Plain integer (bytes)
+	var n uint64
+	if _, err := fmt.Sscanf(s, "%d", &n); err != nil {
+		return 0, fmt.Errorf("unsupported size format %q: use a plain integer (bytes) or a suffix: KB, MB, GB, TB", s)
+	}
+	return n, nil
+}
 
 // GitHubClient is a type alias for the shared GitHubClient from go-gh-extension.
 type GitHubClient = gh.GitHubClient
@@ -28,7 +69,7 @@ func NewGitHubClientWithRepo(repo repository.Repository) (*GitHubClient, error) 
 // (~130 bytes) in the git tree and therefore fall below any reasonable threshold.
 type LFSCandidate struct {
 	Path string `json:"path"`
-	Size int    `json:"size"`
+	Size uint64 `json:"size"`
 	SHA  string `json:"sha"`
 }
 
@@ -36,7 +77,7 @@ type LFSCandidate struct {
 // threshold bytes. If ref is empty the repository's default branch is used.
 // The tree is traversed recursively to avoid the GitHub API's 100,000-entry
 // truncation limit; this may require multiple API calls for large repositories.
-func DetectLFSCandidates(ctx context.Context, g *GitHubClient, repo repository.Repository, ref string, threshold int64) ([]*LFSCandidate, error) {
+func DetectLFSCandidates(ctx context.Context, g *GitHubClient, repo repository.Repository, ref string, threshold uint64) ([]*LFSCandidate, error) {
 	if ref == "" {
 		ghRepo, err := g.GetRepository(ctx, repo.Owner, repo.Name)
 		if err != nil {
@@ -69,12 +110,12 @@ func DetectLFSCandidates(ctx context.Context, g *GitHubClient, repo repository.R
 		if entry.GetType() != "blob" {
 			continue
 		}
-		if int64(entry.GetSize()) <= threshold {
+		if uint64(entry.GetSize()) <= threshold {
 			continue
 		}
 		candidates = append(candidates, &LFSCandidate{
 			Path: entry.GetPath(),
-			Size: entry.GetSize(),
+			Size: uint64(entry.GetSize()),
 			SHA:  entry.GetSHA(),
 		})
 	}
