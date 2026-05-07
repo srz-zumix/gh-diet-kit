@@ -160,8 +160,7 @@ func EstimateMigrationSavingsForPaths(
 			return estimates, nil, fmt.Errorf("failed to get content for %q: %w", path, err)
 		}
 		if fileContent == nil {
-			logger.Warn("path is a directory or not found, skipping", "path", path)
-			continue
+			return estimates, nil, fmt.Errorf("path %q is a directory or was not found", path)
 		}
 
 		e, err := estimateForFile(ctx, g, repo, ref, path, fileContent.GetSHA(), fileContent.GetSize(), scanCommitsDepth)
