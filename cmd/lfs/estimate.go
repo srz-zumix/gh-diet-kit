@@ -1,12 +1,15 @@
 package lfs
 
 import (
+	"context"
+	"errors"
 	"fmt"
 	"strings"
 
 	"github.com/cli/cli/v2/pkg/cmdutil"
 	"github.com/spf13/cobra"
 	"github.com/srz-zumix/gh-diet-kit/pkg/lfs"
+	"github.com/srz-zumix/go-gh-extension/pkg/logger"
 	"github.com/srz-zumix/go-gh-extension/pkg/parser"
 )
 
@@ -76,8 +79,12 @@ When using --format json, the output is an object with "estimates" and
 
 			if len(args) > 0 {
 				estimates, summary, err = lfs.EstimateMigrationSavingsForPaths(ctx, g, repo, refFlag, args, scanCommitsFlag)
-				if err != nil {
+				interrupted := errors.Is(err, context.Canceled)
+				if err != nil && !interrupted {
 					return fmt.Errorf("failed to estimate LFS migration savings: %w", err)
+				}
+				if interrupted {
+					logger.Warn("interrupted: showing partial results", "found", len(estimates))
 				}
 			} else {
 				threshold, parseErr := lfs.ParseSize(thresholdFlag)
@@ -85,8 +92,12 @@ When using --format json, the output is an object with "estimates" and
 					return fmt.Errorf("invalid --threshold value %q: %w", thresholdFlag, parseErr)
 				}
 				estimates, summary, err = lfs.EstimateMigrationSavings(ctx, g, repo, refFlag, threshold, scanCommitsFlag)
-				if err != nil {
+				interrupted := errors.Is(err, context.Canceled)
+				if err != nil && !interrupted {
 					return fmt.Errorf("failed to estimate LFS migration savings: %w", err)
+				}
+				if interrupted {
+					logger.Warn("interrupted: showing partial results", "found", len(estimates))
 				}
 			}
 

@@ -1,12 +1,15 @@
 package lfs
 
 import (
+	"context"
+	"errors"
 	"fmt"
 	"strings"
 
 	"github.com/cli/cli/v2/pkg/cmdutil"
 	"github.com/spf13/cobra"
 	"github.com/srz-zumix/gh-diet-kit/pkg/lfs"
+	"github.com/srz-zumix/go-gh-extension/pkg/logger"
 	"github.com/srz-zumix/go-gh-extension/pkg/parser"
 )
 
@@ -61,8 +64,12 @@ Output fields: PATH, SIZE, SHA`,
 			}
 
 			candidates, err := lfs.DetectLFSCandidates(ctx, g, repo, refFlag, threshold)
-			if err != nil {
+			interrupted := errors.Is(err, context.Canceled)
+			if err != nil && !interrupted {
 				return fmt.Errorf("failed to detect LFS candidates: %w", err)
+			}
+			if interrupted {
+				logger.Warn("interrupted: showing partial results", "found", len(candidates))
 			}
 
 			if sortFlag != "" {
