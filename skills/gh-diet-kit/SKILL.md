@@ -351,24 +351,3 @@ gh diet-kit tree detect -R owner/repo --ref main
 # Export as JSON
 gh diet-kit tree detect -R owner/repo --format json | jq '.dirs[] | select(.entry_count > 50)'
 ```
-
-### `gh diet-kit tree detect`
-
-Analyse the git tree structure of a repository and report directories whose direct entry count (files + subdirectories) meets or exceeds a threshold.
-
-Git stores one tree object per directory per commit. A directory with many direct entries produces a large tree object, and a deep or wide hierarchy multiplies the number of tree objects written on every commit.
-
-Output fields: `PATH`, `DEPTH`, `ENTRY_COUNT`, `TOTAL_FILES`, `EST_TREE_SIZE`.
-
-A summary line (total dirs, total files, total estimated tree object size, max depth) is printed after the table.
-
-```sh
-# List all directories sorted by entry count descending
-gh diet-kit tree detect -R owner/repo --sort entry-count --order desc
-# Report only directories with 100 or more direct entries
-gh diet-kit tree detect -R owner/repo --threshold 100
-# Inspect a specific branch
-gh diet-kit tree detect -R owner/repo --ref main
-# Export as JSON
-gh diet-kit tree detect -R owner/repo --format json | jq '.dirs[] | select(.entry_count > 50)'
-```
