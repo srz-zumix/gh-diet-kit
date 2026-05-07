@@ -103,6 +103,9 @@ func DetectLFSCandidates(ctx context.Context, g *GitHubClient, repo repository.R
 
 	var candidates []*LFSCandidate
 	for _, entry := range tree.Entries {
+		if err := ctx.Err(); err != nil {
+			return nil, err
+		}
 		if entry.GetType() != "blob" {
 			continue
 		}
