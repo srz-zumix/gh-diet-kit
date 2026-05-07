@@ -50,9 +50,14 @@ repository's default branch.
 Use --threshold to change the size cutoff (e.g. 50MB, 1GB, 10000000).
 Default: 10MB. Ignored when path arguments are given.
 
-Output fields (without --scan-commits): PATH, CURRENT_SIZE, ESTIMATED_SAVING
-Output fields (with --scan-commits):    PATH, CURRENT_SIZE, VERSIONS,
-                                        ESTIMATED_TOTAL_SIZE, ESTIMATED_SAVING`,
+Default table columns (without --scan-commits): PATH, CURRENT_SIZE,
+ESTIMATED_SAVING
+Default table columns (with --scan-commits):    PATH, CURRENT_SIZE, VERSIONS,
+                                                ESTIMATED_TOTAL_SIZE,
+                                                ESTIMATED_SAVING
+
+When using --format json, the output is an object with "estimates" and
+"summary". Each item in "estimates" also includes "sha" and "version_count".`,
 		RunE: func(cmd *cobra.Command, args []string) error {
 			ctx := cmd.Context()
 
