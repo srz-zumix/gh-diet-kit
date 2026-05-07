@@ -11,6 +11,19 @@ import (
 	"github.com/srz-zumix/go-gh-extension/pkg/logger"
 )
 
+// DefaultSizeThreshold is the default file size threshold (10 MiB) above which
+// a blob is reported as an LFS candidate.
+const DefaultSizeThreshold uint64 = 10 * 1024 * 1024
+
+// LFSPointerSize is the maximum byte size of a Git LFS pointer file.
+// A real pointer is typically 127–134 bytes; 134 is used as a conservative upper bound.
+const LFSPointerSize uint64 = 134
+
+// MinSizeThreshold is the smallest threshold accepted by DetectLFSCandidates.
+// A threshold at or below LFSPointerSize would cause genuine LFS pointer blobs
+// to be reported as candidates, contradicting the command's purpose.
+const MinSizeThreshold = LFSPointerSize + 1
+
 // ParseSize parses a human-readable size string into a byte count.
 // Accepts a plain integer (bytes) or a value with a unit suffix: KB, MB, GB, TB
 // (case-insensitive, e.g. "50MB", "1gb", "10000000").
@@ -74,6 +87,9 @@ type LFSCandidate struct {
 // The tree is traversed recursively to avoid the GitHub API's 100,000-entry
 // truncation limit; this may require multiple API calls for large repositories.
 func DetectLFSCandidates(ctx context.Context, g *GitHubClient, repo repository.Repository, ref string, threshold uint64) ([]*LFSCandidate, error) {
+	if threshold < MinSizeThreshold {
+		return nil, fmt.Errorf("--threshold must be at least %d bytes (LFS pointer size + 1); got %d", MinSizeThreshold, threshold)
+	}
 	if ref == "" {
 		ghRepo, err := g.GetRepository(ctx, repo.Owner, repo.Name)
 		if err != nil {
@@ -104,7 +120,7 @@ func DetectLFSCandidates(ctx context.Context, g *GitHubClient, repo repository.R
 	var candidates []*LFSCandidate
 	for _, entry := range tree.Entries {
 		if err := ctx.Err(); err != nil {
-			return nil, err
+			return candidates, err
 		}
 		if entry.GetType() != "blob" {
 			continue

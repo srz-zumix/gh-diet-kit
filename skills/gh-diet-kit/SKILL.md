@@ -127,7 +127,7 @@ commands:
     usage: gh diet-kit skills [flags]
 
   - name: gh diet-kit lfs detect
-    description: Detect files in the repository whose size exceeds a threshold and are not currently stored as Git LFS objects. Outputs table (default) or JSON with fields PATH, SIZE, SHA. Default threshold is 10MB.
+    description: Detect files in the repository whose size exceeds a threshold and are not currently stored as Git LFS objects. Outputs table (default) or JSON with fields PATH, SIZE, SHA. Default threshold is 10MB. The minimum allowed threshold is 135 bytes (one byte above the LFS pointer size of 134 bytes); values at or below the pointer size would cause genuine LFS pointer blobs to be reported as candidates.
     usage: gh diet-kit lfs detect [flags]
     flags:
       - name: --format
@@ -148,7 +148,7 @@ commands:
         shorthand: -t
         description: Format JSON output using a Go template
       - name: --threshold
-        description: Minimum file size to report as an LFS candidate (e.g. 50MB, 1GB, 10000000; default 10MB)
+        description: Minimum file size to report as an LFS candidate; must be at least 135 bytes (e.g. 50MB, 1GB, 10000000; default 10MB)
 
   - name: gh diet-kit lfs estimate
     description: Estimate how much git object storage would be freed by migrating large files to Git LFS. When path arguments are given, only those files are estimated regardless of --threshold. The default table output shows PATH, CURRENT_SIZE, and ESTIMATED_SAVING, and also shows VERSIONS and ESTIMATED_TOTAL_SIZE when --scan-commits is used. JSON or template output includes those fields plus per-estimate metadata such as sha and version_count, and exported output can also include a top-level summary object. Default threshold is 10MB.
@@ -174,7 +174,7 @@ commands:
         shorthand: -t
         description: Format JSON output using a Go template
       - name: --threshold
-        description: Minimum file size to include in the estimate (ignored when path arguments are given; default 10MB)
+        description: Minimum file size to include in the estimate; must be at least 135 bytes (ignored when path arguments are given; default 10MB)
 ---
 
 # gh-diet-kit
@@ -275,7 +275,9 @@ gh diet-kit skills
 
 ### `gh diet-kit lfs detect`
 
-Detect files in the repository whose size exceeds a threshold and are not currently stored as Git LFS objects. Files properly tracked by LFS appear as small pointer files (~130 bytes) in the git tree and are therefore not reported.
+Detect files in the repository whose size exceeds a threshold and are not currently stored as Git LFS objects. Files properly tracked by LFS appear as small pointer files (~134 bytes) in the git tree and are therefore not reported.
+
+The minimum allowed threshold is 135 bytes (one byte above the LFS pointer size).
 
 Output fields: `PATH`, `SIZE`, `SHA`.
 

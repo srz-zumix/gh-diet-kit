@@ -13,7 +13,7 @@ import (
 
 // lfsPointerSize is the approximate size in bytes of a Git LFS pointer file.
 // A real pointer is typically 127–134 bytes; 134 is used as a conservative upper bound.
-const lfsPointerSize = 134
+const lfsPointerSize = LFSPointerSize
 
 // LFSSavingEstimate holds the estimated storage saving for a single file path
 // when the file is migrated to Git LFS.
