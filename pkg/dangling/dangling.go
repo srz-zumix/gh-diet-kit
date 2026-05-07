@@ -12,6 +12,7 @@ import (
 	"github.com/srz-zumix/go-gh-extension/pkg/gh"
 	"github.com/srz-zumix/go-gh-extension/pkg/gitutil"
 	"github.com/srz-zumix/go-gh-extension/pkg/logger"
+	"golang.org/x/sync/errgroup"
 )
 
 // GitHubClient is a type alias for the shared GitHubClient from go-gh-extension.
@@ -639,25 +640,51 @@ func iterateDanglingCommits(ctx context.Context, g *GitHubClient, repo repositor
 			}
 		}
 
-		chain, err := listCandidatesForPR(ctx, g, repo, pr, opts)
-		if err != nil {
-			if opts.StrictErrors {
-				return err
-			}
-			logger.Warn("skipping PR: failed to collect chain candidates", "pr", pr.GetNumber(), "error", err)
-			continue
+		// Run chain and force-push candidate collection concurrently; the two
+		// lookups are independent and together account for the majority of
+		// per-PR API calls.
+		type collResult struct {
+			commits []*github.RepositoryCommit
+			err     error
+		}
+		chainCh := make(chan collResult, 1)
+		go func() {
+			c, err := listCandidatesForPR(ctx, g, repo, pr, opts)
+			chainCh <- collResult{c, err}
+		}()
+
+		var fpCh chan collResult
+		if !opts.DisableForcePush {
+			fpCh = make(chan collResult, 1)
+			go func() {
+				fp, err := listForcePushedOutPRCommits(ctx, g, repo, pr.GetNumber(), opts)
+				fpCh <- collResult{fp, err}
+			}()
 		}
 
+		chainRes := <-chainCh
+		if chainRes.err != nil {
+			if opts.StrictErrors {
+				return chainRes.err
+			}
+			logger.Warn("skipping PR: failed to collect chain candidates", "pr", pr.GetNumber(), "error", chainRes.err)
+			if fpCh != nil {
+				<-fpCh // drain to avoid goroutine leak
+			}
+			continue
+		}
+		chain := chainRes.commits
+
 		var forcePushed []*github.RepositoryCommit
-		if !opts.DisableForcePush {
-			fp, fpErr := listForcePushedOutPRCommits(ctx, g, repo, pr.GetNumber(), opts)
-			if fpErr != nil {
+		if fpCh != nil {
+			fpRes := <-fpCh
+			if fpRes.err != nil {
 				if opts.StrictErrors {
-					return fpErr
+					return fpRes.err
 				}
-				logger.Debug("skipping force-push based commit collection", "pr", pr.GetNumber(), "error", fpErr)
+				logger.Debug("skipping force-push based commit collection", "pr", pr.GetNumber(), "error", fpRes.err)
 			} else {
-				forcePushed = fp
+				forcePushed = fpRes.commits
 			}
 		}
 
@@ -704,12 +731,26 @@ func FindDanglingCommits(ctx context.Context, g *GitHubClient, repo repository.R
 		blobCache = newCommitBlobCache(repo)
 	}
 	err := iterateDanglingCommits(ctx, g, repo, prs, opts, func(pr *github.PullRequest, commits []*github.RepositoryCommit) error {
-		for _, c := range commits {
-			sha := c.GetSHA()
-			info, err := fetchCommitBlobInfo(ctx, g, repo, sha, opts, blobCache)
-			if err != nil {
-				return err
-			}
+		// Fetch blob info for all commits in this PR concurrently.
+		// Each commit has a unique SHA so concurrent cache access is safe.
+		infos := make([]*commitBlobInfo, len(commits))
+		eg, egCtx := errgroup.WithContext(ctx)
+		for i, c := range commits {
+			i, c := i, c
+			eg.Go(func() error {
+				info, err := fetchCommitBlobInfo(egCtx, g, repo, c.GetSHA(), opts, blobCache)
+				if err != nil {
+					return err
+				}
+				infos[i] = info
+				return nil
+			})
+		}
+		if err := eg.Wait(); err != nil {
+			return err
+		}
+		for i, c := range commits {
+			info := infos[i]
 			if info == nil {
 				continue
 			}
@@ -718,7 +759,7 @@ func FindDanglingCommits(ctx context.Context, g *GitHubClient, repo repository.R
 				message = info.Commit.GetCommit().GetMessage()
 			}
 			result = append(result, &DanglingCommit{
-				SHA:           sha,
+				SHA:           c.GetSHA(),
 				Message:       message,
 				PRNumber:      pr.GetNumber(),
 				PRURL:         pr.GetHTMLURL(),
@@ -762,14 +803,30 @@ func FindDanglingBlobs(ctx context.Context, g *GitHubClient, repo repository.Rep
 	// whereas unreachable blobs are per-PR-deduplicated via the visitor's seen map.
 	reachableBlobSHAs := make(map[string]bool)
 	err := iterateDanglingCommits(ctx, g, repo, prs, opts, func(pr *github.PullRequest, commits []*github.RepositoryCommit) error {
+		// Fetch blob info for all commits in this PR concurrently, then process
+		// results sequentially for correct blob deduplication and cross-PR caching.
+		infos := make([]*commitBlobInfo, len(commits))
+		eg, egCtx := errgroup.WithContext(ctx)
+		for i, c := range commits {
+			i, c := i, c
+			eg.Go(func() error {
+				info, err := fetchCommitBlobInfo(egCtx, g, repo, c.GetSHA(), opts, blobCache)
+				if err != nil {
+					return err
+				}
+				infos[i] = info
+				return nil
+			})
+		}
+		if err := eg.Wait(); err != nil {
+			return err
+		}
+
 		// Deduplicate blob SHAs within this PR to avoid redundant output.
 		seen := make(map[string]bool)
-		for _, c := range commits {
+		for i, c := range commits {
 			commitSHA := c.GetSHA()
-			info, err := fetchCommitBlobInfo(ctx, g, repo, commitSHA, opts, blobCache)
-			if err != nil {
-				return err
-			}
+			info := infos[i]
 			if info == nil {
 				continue
 			}
