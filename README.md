@@ -179,3 +179,35 @@ gh diet-kit lfs estimate [path...] [flags]
 | `--sort` | | | Sort by field: `saving`, `size`, `path`, `versions` |
 | `--template` | `-t` | | Format JSON output using a Go template |
 | `--threshold` | | `10MB` | Minimum file size to include in the estimate; must be at least 135 bytes (ignored when path arguments are given) |
+
+#### tree detect
+
+Analyse the git tree structure of a repository and report directories whose direct entry count meets or exceeds a threshold.
+
+Git stores one tree object per directory per commit. A directory with many direct entries produces a large tree object, and a deep or wide hierarchy multiplies the number of tree objects written on every commit. This command helps identify which directories are the primary contributors to tree object bloat.
+
+For each directory the following fields are reported:
+
+- `ENTRY_COUNT` – number of direct children (blobs + sub-trees)
+- `TOTAL_FILES` – total number of blob entries reachable from this directory (recursive)
+- `EST_TREE_SIZE` – estimated byte size of the git tree object (28 bytes fixed overhead per entry + base name length)
+- `DEPTH` – nesting level (0 = repository root)
+
+A summary line with total directory count, total file count, total estimated tree object size, and maximum depth is printed after the table.
+
+Output fields: `PATH`, `DEPTH`, `ENTRY_COUNT`, `TOTAL_FILES`, `EST_TREE_SIZE`.
+
+```sh
+gh diet-kit tree detect [flags]
+```
+
+| Flag | Shorthand | Default | Description |
+| ------ | ----------- | ------- | ------------- |
+| `--format` | | table | Output format: `json` |
+| `--jq` | `-q` | | Filter JSON output using a jq expression |
+| `--order` | | `asc` | Sort order: `asc` or `desc` |
+| `--ref` | | repository default branch | Branch, tag, or commit SHA to inspect |
+| `--repo` | `-R` | current repository | Repository in `[HOST/]OWNER/REPO` format |
+| `--sort` | | | Sort by field: `entry-count`, `total-files`, `est-size`, `depth`, `path` |
+| `--template` | `-t` | | Format JSON output using a Go template |
+| `--threshold` | | `1` | Minimum number of direct entries in a directory to report (must be >= 1) |
