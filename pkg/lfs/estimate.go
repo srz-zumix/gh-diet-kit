@@ -7,6 +7,7 @@ import (
 	"strings"
 
 	"github.com/cli/go-gh/v2/pkg/repository"
+	"github.com/srz-zumix/go-gh-extension/pkg/gh"
 	"github.com/srz-zumix/go-gh-extension/pkg/logger"
 )
 
@@ -179,7 +180,7 @@ func EstimateMigrationSavingsForPaths(
 // Returns at least 1 (the current version is always present).
 func countFileVersions(ctx context.Context, g *GitHubClient, repo repository.Repository, ref, path string, maxDepth int) (int, error) {
 	logger.Debug("counting file versions", "path", path, "max_depth", maxDepth)
-	commits, err := g.ListCommitsForPath(ctx, repo.Owner, repo.Name, path, ref, maxDepth)
+	commits, err := gh.ListCommitsForPath(ctx, g, repo, path, ref, maxDepth)
 	if err != nil {
 		return 0, err
 	}
