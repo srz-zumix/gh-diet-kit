@@ -153,9 +153,11 @@ When `path` arguments are given, only those specific files are estimated regardl
 
 For each candidate the estimated saving is `estimated_total_size - (lfs_pointer_size × version_count)` where `lfs_pointer_size ≈ 134` bytes. By default only the current tree is inspected (`version_count = 1`). Use `--scan-commits` to count historic versions; the estimated total size is approximated as `current_size × version_count`.
 
-Output fields (without `--scan-commits`): `PATH`, `CURRENT_SIZE`, `ESTIMATED_SAVING`
+Default table columns (without `--scan-commits`): `PATH`, `CURRENT_SIZE`, `ESTIMATED_SAVING`
 
-Output fields (with `--scan-commits`): `PATH`, `CURRENT_SIZE`, `VERSIONS`, `ESTIMATED_TOTAL_SIZE`, `ESTIMATED_SAVING`
+Default table columns (with `--scan-commits`): `PATH`, `CURRENT_SIZE`, `VERSIONS`, `ESTIMATED_TOTAL_SIZE`, `ESTIMATED_SAVING`
+
+When `--format json` is used, the exported object includes JSON fields for the estimate data, including `path`, `current_size`, `estimated_saving`, `sha`, and `version_count`. With `--scan-commits`, the JSON output also includes `estimated_total_size`.
 
 ```sh
 gh diet-kit lfs estimate [path...] [flags]
