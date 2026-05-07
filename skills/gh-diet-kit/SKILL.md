@@ -150,6 +150,30 @@ commands:
       - name: --threshold
         description: Minimum file size to report as an LFS candidate; must be at least 135 bytes (e.g. 50MB, 1GB, 10000000; default 10MB)
 
+  - name: gh diet-kit tree detect
+    description: Analyse the git tree structure of a repository and report directories whose direct entry count meets or exceeds a threshold. Outputs table (default) or JSON with fields PATH, DEPTH, ENTRY_COUNT, TOTAL_FILES, EST_TREE_SIZE. A summary line (total dirs, total files, total estimated tree object size, max depth) is printed after the table. EST_TREE_SIZE is estimated as 28 bytes of fixed overhead per entry plus the base name length.
+    usage: gh diet-kit tree detect [flags]
+    flags:
+      - name: --format
+        description: Output format (json)
+      - name: --jq
+        shorthand: -q
+        description: Filter JSON output using a jq expression
+      - name: --order
+        description: Sort order (asc or desc, default asc)
+      - name: --ref
+        description: Branch, tag, or commit SHA to inspect (default: repository default branch)
+      - name: --repo
+        shorthand: -R
+        description: Repository in "[HOST/]OWNER/REPO" format (default: current repository)
+      - name: --sort
+        description: Sort by field (entry-count, total-files, est-size, depth, path)
+      - name: --template
+        shorthand: -t
+        description: Format JSON output using a Go template
+      - name: --threshold
+        description: Minimum number of direct entries in a directory to report; must be >= 1 (default 1)
+
   - name: gh diet-kit lfs estimate
     description: Estimate how much git object storage would be freed by migrating large files to Git LFS. When path arguments are given, only those files are estimated regardless of --threshold. The default table output shows PATH, CURRENT_SIZE, and ESTIMATED_SAVING, and also shows VERSIONS and ESTIMATED_TOTAL_SIZE when --scan-commits is used. JSON or template output includes those fields plus per-estimate metadata such as sha and version_count, and exported output can also include a top-level summary object. Default threshold is 10MB.
     usage: gh diet-kit lfs estimate [path...] [flags]
@@ -193,6 +217,8 @@ gh diet-kit
 ├── lfs                         # Git LFS utilities
 │   ├── detect                  # Detect large files that should be tracked by LFS
 │   └── estimate                # Estimate storage savings from LFS migration
+├── tree                        # Git tree structure analysis
+│   └── detect                  # Detect directories with many entries bloating tree objects
 └── skills                      # Show embedded skills documentation
 ```
 
@@ -303,4 +329,46 @@ gh diet-kit lfs estimate -R owner/repo
 gh diet-kit lfs estimate -R owner/repo --threshold 50MB --scan-commits -1
 gh diet-kit lfs estimate -R owner/repo path/to/large/file.bin
 gh diet-kit lfs estimate -R owner/repo --format json | jq '.estimates[] | .estimated_saving'
+```
+
+### `gh diet-kit tree detect`
+
+Analyse the git tree structure of a repository and report directories whose direct entry count (files + subdirectories) meets or exceeds a threshold.
+
+Git stores one tree object per directory per commit. A directory with many direct entries produces a large tree object, and a deep or wide hierarchy multiplies the number of tree objects written on every commit.
+
+Output fields: `PATH`, `DEPTH`, `ENTRY_COUNT`, `TOTAL_FILES`, `EST_TREE_SIZE`.
+
+A summary line (total dirs, total files, total estimated tree object size, max depth) is printed after the table.
+
+```sh
+# List all directories sorted by entry count descending
+gh diet-kit tree detect -R owner/repo --sort entry-count --order desc
+# Report only directories with 100 or more direct entries
+gh diet-kit tree detect -R owner/repo --threshold 100
+# Inspect a specific branch
+gh diet-kit tree detect -R owner/repo --ref main
+# Export as JSON
+gh diet-kit tree detect -R owner/repo --format json | jq '.dirs[] | select(.entry_count > 50)'
+```
+
+### `gh diet-kit tree detect`
+
+Analyse the git tree structure of a repository and report directories whose direct entry count (files + subdirectories) meets or exceeds a threshold.
+
+Git stores one tree object per directory per commit. A directory with many direct entries produces a large tree object, and a deep or wide hierarchy multiplies the number of tree objects written on every commit.
+
+Output fields: `PATH`, `DEPTH`, `ENTRY_COUNT`, `TOTAL_FILES`, `EST_TREE_SIZE`.
+
+A summary line (total dirs, total files, total estimated tree object size, max depth) is printed after the table.
+
+```sh
+# List all directories sorted by entry count descending
+gh diet-kit tree detect -R owner/repo --sort entry-count --order desc
+# Report only directories with 100 or more direct entries
+gh diet-kit tree detect -R owner/repo --threshold 100
+# Inspect a specific branch
+gh diet-kit tree detect -R owner/repo --ref main
+# Export as JSON
+gh diet-kit tree detect -R owner/repo --format json | jq '.dirs[] | select(.entry_count > 50)'
 ```

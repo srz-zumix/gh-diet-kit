@@ -2,7 +2,7 @@ package cmd
 
 import (
 	"github.com/spf13/cobra"
-	danglingcmd "github.com/srz-zumix/gh-diet-kit/cmd/dangling"
+	"github.com/srz-zumix/gh-diet-kit/cmd/dangling"
 )
 
 func init() {
@@ -22,8 +22,8 @@ The primary source of dangling objects is squash or rebase merged pull requests:
 when a PR is merged this way the original commits and their blobs remain in the
 remote object store, reachable only via refs/pull/{number}/head, not via branches.`,
 	}
-	cmd.AddCommand(danglingcmd.NewCommitsCmd())
-	cmd.AddCommand(danglingcmd.NewBlobsCmd())
-	cmd.AddCommand(danglingcmd.NewLocalCmd())
+	cmd.AddCommand(dangling.NewCommitsCmd())
+	cmd.AddCommand(dangling.NewBlobsCmd())
+	cmd.AddCommand(dangling.NewLocalCmd())
 	return cmd
 }

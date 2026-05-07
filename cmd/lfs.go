@@ -2,7 +2,7 @@ package cmd
 
 import (
 	"github.com/spf13/cobra"
-	lfscmd "github.com/srz-zumix/gh-diet-kit/cmd/lfs"
+	"github.com/srz-zumix/gh-diet-kit/cmd/lfs"
 )
 
 func init() {
@@ -19,7 +19,7 @@ func NewLFSCmd() *cobra.Command {
 
 Use the subcommands to detect files that should be tracked by LFS and estimate git storage savings from migrating files to LFS.`,
 	}
-	cmd.AddCommand(lfscmd.NewDetectCmd())
-	cmd.AddCommand(lfscmd.NewEstimateCmd())
+	cmd.AddCommand(lfs.NewDetectCmd())
+	cmd.AddCommand(lfs.NewEstimateCmd())
 	return cmd
 }
