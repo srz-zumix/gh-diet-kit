@@ -228,26 +228,36 @@ func fetchBranchBlobSizeMap(ctx context.Context, g *GitHubClient, repo repositor
 // Returns an error for unknown field names.
 func SortNoPRBranchesBy(branches []*NoPRBranch, field string, desc bool) error {
 	var less func(a, b *NoPRBranch) int
+	reverse := desc
 	switch strings.ToLower(field) {
 	case "branch":
 		less = func(a, b *NoPRBranch) int { return cmp.Compare(a.Name, b.Name) }
 	case "ahead_count":
 		less = func(a, b *NoPRBranch) int { return cmp.Compare(a.AheadCount, b.AheadCount) }
 	case "unique_size":
-		deref := func(p *uint64) uint64 {
-			if p == nil {
-				return 0
-			}
-			return *p
-		}
+		// Treat nil as unknown and always place it after known sizes.
+		// This avoids mixing unknown values with actual zero-byte results.
+		reverse = false
 		less = func(a, b *NoPRBranch) int {
-			return cmp.Compare(deref(a.UniqueBlobSize), deref(b.UniqueBlobSize))
+			switch {
+			case a.UniqueBlobSize == nil && b.UniqueBlobSize == nil:
+				return 0
+			case a.UniqueBlobSize == nil:
+				return 1
+			case b.UniqueBlobSize == nil:
+				return -1
+			}
+
+			if desc {
+				return cmp.Compare(*b.UniqueBlobSize, *a.UniqueBlobSize)
+			}
+			return cmp.Compare(*a.UniqueBlobSize, *b.UniqueBlobSize)
 		}
 	default:
 		return fmt.Errorf("unknown sort field %q: valid values are branch, ahead_count, unique_size", field)
 	}
 	slices.SortStableFunc(branches, func(a, b *NoPRBranch) int {
-		if desc {
+		if reverse {
 			return less(b, a)
 		}
 		return less(a, b)
