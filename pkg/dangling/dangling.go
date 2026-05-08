@@ -94,7 +94,7 @@ const (
 // commitFetchConcurrency is the maximum number of concurrent GitHub API calls
 // used when fetching commit blob info within a single PR. Keeping this small
 // avoids secondary rate-limit spikes while still parallelising I/O.
-const commitFetchConcurrency = 5
+const commitFetchConcurrency = 10
 
 // ReachabilityCheckModeValues is the ordered list of valid ReachabilityCheckMode
 // string values, suitable for use with flag enum helpers.
@@ -644,19 +644,25 @@ func iterateDanglingCommits(ctx context.Context, g *GitHubClient, repo repositor
 		needChain := chainEnabled
 		needFP := fpEnabled
 
+		// cachedEntry holds the previously stored entry for this PR, if any.
+		// It is kept in scope so that partial re-collection can merge back the
+		// scopes that were not re-fetched, preventing a write that would
+		// overwrite valid cached data with a nil slice.
+		var cachedEntry *prCacheEntry
 		if headSHA != "" {
-			if cached := cache.load(pr.GetNumber(), headSHA); cached != nil {
+			if loaded := cache.load(pr.GetNumber(), headSHA); loaded != nil {
+				cachedEntry = loaded
 				// Pre-populate from cache for each collection scope that was covered.
 				// A scope not covered by the cache still requires a live API call below.
-				if !chainEnabled || cached.ChainCollected {
+				if !chainEnabled || cachedEntry.ChainCollected {
 					if chainEnabled {
-						chain = reconstruct(cached.ChainCommits)
+						chain = reconstruct(cachedEntry.ChainCommits)
 					}
 					needChain = false
 				}
-				if !fpEnabled || cached.ForcePushCollected {
+				if !fpEnabled || cachedEntry.ForcePushCollected {
 					if fpEnabled {
-						forcePushed = reconstruct(cached.ForcePushCommits)
+						forcePushed = reconstruct(cachedEntry.ForcePushCommits)
 					}
 					needFP = false
 				}
@@ -714,10 +720,20 @@ func iterateDanglingCommits(ctx context.Context, g *GitHubClient, repo repositor
 			// Persist only when new data was fetched (partial or full cache miss).
 			// chainCollected/fpCollected flags in the entry tell future runs whether
 			// each collection was both enabled and successful.
+			// When a scope is disabled for this run, restore it from the existing
+			// cached entry so the write does not erase previously collected data.
 			if headSHA != "" {
-				cache.save(pr.GetNumber(), headSHA, chain, forcePushed,
-					chainEnabled && !chainFailed,
-					fpEnabled && !fpFailed)
+				saveChain, saveChainCollected := chain, chainEnabled && !chainFailed
+				saveFP, saveFPCollected := forcePushed, fpEnabled && !fpFailed
+				if !chainEnabled && cachedEntry != nil {
+					saveChain = reconstruct(cachedEntry.ChainCommits)
+					saveChainCollected = cachedEntry.ChainCollected
+				}
+				if !fpEnabled && cachedEntry != nil {
+					saveFP = reconstruct(cachedEntry.ForcePushCommits)
+					saveFPCollected = cachedEntry.ForcePushCollected
+				}
+				cache.save(pr.GetNumber(), headSHA, saveChain, saveFP, saveChainCollected, saveFPCollected)
 			}
 		}
 

@@ -61,13 +61,14 @@ gh diet-kit dangling blobs [flags]
 | ------ | ----------- | ------- | ------------- |
 | `--clear-cache` | | `false` | Clear the per-PR and commit blob cache before running, then use cache normally |
 | `--clear-git-cache` | | `false` | Clear the git bare clone cache and re-clone before running |
+| `--concurrency` | | `0` | Maximum number of concurrent GitHub API calls per PR for commit blob fetches (`<=0` uses the package default of 5) |
 | `--format` | | table | Output format: `json` |
 | `--jq` | `-q` | | Filter JSON output using a jq expression |
 | `--limit` | | unlimited | Maximum number of closed PRs to inspect (ignored when `--pr` is specified) |
 | `--no-cache` | | `false` | Disable per-PR result cache; always re-process all PRs (does not clear existing cache entries) |
-| `--no-closed` | | `false` | Disable closed unmerged PR blob detection |
-| `--no-force-push` | | `false` | Disable force-push dropped commit blob detection |
-| `--no-squash-merge` | | `false` | Disable squash/rebase merged PR blob detection |
+| `--no-closed` | | `false` | Disable closed unmerged PR blob detection. Previously cached data for this scope is preserved in the cache when this flag is set. |
+| `--no-force-push` | | `false` | Disable force-push dropped commit blob detection. Previously cached data for this scope is preserved in the cache when this flag is set. |
+| `--no-squash-merge` | | `false` | Disable squash/rebase merged PR blob detection. Previously cached data for this scope is preserved in the cache when this flag is set. |
 | `--order` | | `asc` | Sort order: `asc` or `desc` |
 | `--pr` | | all closed PRs | PR numbers to inspect (comma-separated or repeated, e.g. `--pr 1,2` or `--pr 1 --pr 2`) |
 | `--reachability-check` | | `none` | Filter out blobs reachable from a local ref (requires `git fetch --all --tags`): `none`, `local-object` |
@@ -90,13 +91,14 @@ gh diet-kit dangling commits [flags]
 | ------ | ----------- | ------- | ------------- |
 | `--clear-cache` | | `false` | Clear the per-PR and commit blob cache before running, then use cache normally |
 | `--clear-git-cache` | | `false` | Clear the git bare clone cache and re-clone before running |
+| `--concurrency` | | `0` | Maximum number of concurrent GitHub API calls per PR for commit blob fetches (`<=0` uses the package default of 5) |
 | `--format` | | table | Output format: `json` |
 | `--jq` | `-q` | | Filter JSON output using a jq expression |
 | `--limit` | | unlimited | Maximum number of closed PRs to inspect (ignored when `--pr` is specified) |
 | `--no-cache` | | `false` | Disable per-PR result cache; always re-process all PRs (does not clear existing cache entries) |
-| `--no-closed` | | `false` | Disable closed unmerged PR detection |
-| `--no-force-push` | | `false` | Disable force-push dropped commit detection |
-| `--no-squash-merge` | | `false` | Disable squash/rebase merged PR commit detection |
+| `--no-closed` | | `false` | Disable closed unmerged PR detection. Previously cached data for this scope is preserved in the cache when this flag is set. |
+| `--no-force-push` | | `false` | Disable force-push dropped commit detection. Previously cached data for this scope is preserved in the cache when this flag is set. |
+| `--no-squash-merge` | | `false` | Disable squash/rebase merged PR commit detection. Previously cached data for this scope is preserved in the cache when this flag is set. |
 | `--order` | | `asc` | Sort order: `asc` or `desc` |
 | `--pr` | | all closed PRs | PR numbers to inspect (comma-separated or repeated, e.g. `--pr 1,2` or `--pr 1 --pr 2`) |
 | `--reachability-check` | | `none` | Verify candidates are truly unreachable: `none`, `default-branch`, `branches`, `refs`, `local-object`, `local-refs` |

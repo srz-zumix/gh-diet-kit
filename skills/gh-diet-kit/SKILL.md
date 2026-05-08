@@ -32,6 +32,8 @@ commands:
         description: Clear the per-PR and commit blob cache before running, then use cache normally (default: false)
       - name: --clear-git-cache
         description: Clear the git bare clone cache and re-clone before running (default: false)
+      - name: --concurrency
+        description: Maximum number of concurrent GitHub API calls per PR for commit blob fetches; <=0 uses the package default of 5 (default: 0)
       - name: --format
         description: Output format (json)
       - name: --jq
@@ -42,11 +44,11 @@ commands:
       - name: --no-cache
         description: Disable per-PR result cache; always re-process all PRs (does not clear existing cache entries) (default: false)
       - name: --no-closed
-        description: Disable closed unmerged PR blob detection (default: false)
+        description: Disable closed unmerged PR blob detection; previously cached data for this scope is preserved in the cache when this flag is set (default: false)
       - name: --no-force-push
-        description: Disable force-push dropped commit blob detection (default: false)
+        description: Disable force-push dropped commit blob detection; previously cached data for this scope is preserved in the cache when this flag is set (default: false)
       - name: --no-squash-merge
-        description: Disable squash/rebase merged PR blob detection (default: false)
+        description: Disable squash/rebase merged PR blob detection; previously cached data for this scope is preserved in the cache when this flag is set (default: false)
       - name: --order
         description: Sort order (asc or desc, default asc)
       - name: --pr
@@ -72,6 +74,8 @@ commands:
         description: Clear the per-PR and commit blob cache before running, then use cache normally (default: false)
       - name: --clear-git-cache
         description: Clear the git bare clone cache and re-clone before running (default: false)
+      - name: --concurrency
+        description: Maximum number of concurrent GitHub API calls per PR for commit blob fetches; <=0 uses the package default of 5 (default: 0)
       - name: --format
         description: Output format (json)
       - name: --jq
@@ -82,11 +86,11 @@ commands:
       - name: --no-cache
         description: Disable per-PR result cache; always re-process all PRs (does not clear existing cache entries) (default: false)
       - name: --no-closed
-        description: Disable closed unmerged PR detection (default: false)
+        description: Disable closed unmerged PR detection; previously cached data for this scope is preserved in the cache when this flag is set (default: false)
       - name: --no-force-push
-        description: Disable force-push dropped commit detection (default: false)
+        description: Disable force-push dropped commit detection; previously cached data for this scope is preserved in the cache when this flag is set (default: false)
       - name: --no-squash-merge
-        description: Disable squash/rebase merged PR commit detection (default: false)
+        description: Disable squash/rebase merged PR commit detection; previously cached data for this scope is preserved in the cache when this flag is set (default: false)
       - name: --order
         description: Sort order (asc or desc, default asc)
       - name: --pr
