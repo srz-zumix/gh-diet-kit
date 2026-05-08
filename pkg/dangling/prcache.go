@@ -107,9 +107,9 @@ func (c *prCache) load(prNumber int, headSHA string) *prCacheEntry {
 }
 
 // save writes the given chain and force-push candidate lists to the cache for the given PR.
-// chainCollected and fpCollected indicate whether each collection was actually
-// attempted (not disabled by options) so that a future load can detect when the
-// cached entry does not cover the collection scope of the current run.
+// chainCollected and fpCollected indicate whether each collection was enabled
+// and completed successfully so that a future load can detect when the cached
+// entry does not cover the collection scope of the current run.
 func (c *prCache) save(prNumber int, headSHA string, chain []*github.RepositoryCommit, forcePushed []*github.RepositoryCommit, chainCollected, fpCollected bool) {
 	if c == nil {
 		return
