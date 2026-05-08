@@ -12,6 +12,7 @@ import (
 	"github.com/srz-zumix/go-gh-extension/pkg/gh"
 	"github.com/srz-zumix/go-gh-extension/pkg/gitutil"
 	"github.com/srz-zumix/go-gh-extension/pkg/logger"
+	"golang.org/x/sync/errgroup"
 )
 
 // GitHubClient is a type alias for the shared GitHubClient from go-gh-extension.
@@ -90,6 +91,11 @@ const (
 	ReachabilityCheckLocalRefs ReachabilityCheckMode = "local-refs"
 )
 
+// commitFetchConcurrency is the maximum number of concurrent GitHub API calls
+// used when fetching commit blob info within a single PR. Keeping this small
+// avoids secondary rate-limit spikes while still parallelising I/O.
+const commitFetchConcurrency = 10
+
 // ReachabilityCheckModeValues is the ordered list of valid ReachabilityCheckMode
 // string values, suitable for use with flag enum helpers.
 var ReachabilityCheckModeValues = []string{
@@ -129,6 +135,19 @@ type DanglingOptions struct {
 	// the run. Can be combined with NoCache to wipe without using the cache, or used
 	// alone to start fresh while still caching results of the current run.
 	ClearCache bool
+	// CommitFetchConcurrency is the maximum number of concurrent GitHub API calls
+	// used when fetching commit blob info within a single PR. Zero or negative uses
+	// commitFetchConcurrency as the default.
+	CommitFetchConcurrency int
+}
+
+// fetchConcurrency returns the effective concurrency limit for commit blob fetches.
+// It falls back to commitFetchConcurrency when CommitFetchConcurrency is not positive.
+func (o DanglingOptions) fetchConcurrency() int {
+	if o.CommitFetchConcurrency > 0 {
+		return o.CommitFetchConcurrency
+	}
+	return commitFetchConcurrency
 }
 
 // parentUnreachable reports whether any of the given parent commits has a SHA
@@ -612,67 +631,114 @@ func iterateDanglingCommits(ctx context.Context, g *GitHubClient, repo repositor
 			continue
 		}
 
-		// Try to load candidates from cache using the PR number and head SHA as the key.
-		// A non-empty head SHA is required; PRs without one are processed normally.
 		headSHA := prHeadSHA(pr)
+		chainEnabled := (pr.MergedAt != nil && !opts.DisableSquashRebase) ||
+			(pr.MergedAt == nil && !opts.DisableClosed)
+		fpEnabled := !opts.DisableForcePush
+
+		// Initialize candidates; these may be pre-populated from cache below.
+		// needChain/needFP track which collections still require a live API call.
+		var chain []*github.RepositoryCommit
+		var forcePushed []*github.RepositoryCommit
+		var chainFailed, fpFailed bool
+		needChain := chainEnabled
+		needFP := fpEnabled
+
+		// cachedEntry holds the previously stored entry for this PR, if any.
+		// It is kept in scope so that partial re-collection can merge back the
+		// scopes that were not re-fetched, preventing a write that would
+		// overwrite valid cached data with a nil slice.
+		var cachedEntry *prCacheEntry
 		if headSHA != "" {
-			if cached := cache.load(pr.GetNumber(), headSHA); cached != nil {
-				logger.Debug("pr cache hit", "pr", pr.GetNumber())
-				// Filter cached candidates according to the current opts, mirroring
-				// the collection logic in listCandidatesForPR / listForcePushedOutPRCommits.
-				// Chain commits are relevant only when the detection method for this PR type
-				// is enabled in the current run.
-				var cachedChain []*github.RepositoryCommit
-				chainEnabled := (pr.MergedAt != nil && !opts.DisableSquashRebase) ||
-					(pr.MergedAt == nil && !opts.DisableClosed)
-				if chainEnabled {
-					cachedChain = reconstruct(cached.ChainCommits)
+			if loaded := cache.load(pr.GetNumber(), headSHA); loaded != nil {
+				cachedEntry = loaded
+				// Pre-populate from cache for each collection scope that was covered.
+				// A scope not covered by the cache still requires a live API call below.
+				if !chainEnabled || cachedEntry.ChainCollected {
+					if chainEnabled {
+						chain = reconstruct(cachedEntry.ChainCommits)
+					}
+					needChain = false
 				}
-				var cachedFP []*github.RepositoryCommit
-				if !opts.DisableForcePush {
-					cachedFP = reconstruct(cached.ForcePushCommits)
+				if !fpEnabled || cachedEntry.ForcePushCollected {
+					if fpEnabled {
+						forcePushed = reconstruct(cachedEntry.ForcePushCommits)
+					}
+					needFP = false
 				}
-				if err := processPRCandidates(ctx, g, repo, pr, cachedChain, cachedFP, opts, unreachableSHAs, visit); err != nil {
-					return err
+				if !needChain && !needFP {
+					logger.Debug("pr cache hit", "pr", pr.GetNumber())
+				} else {
+					logger.Debug("pr cache partial hit: re-collecting missing data", "pr", pr.GetNumber(),
+						"need_chain", needChain, "need_fp", needFP)
 				}
-				continue
 			}
 		}
 
-		chain, err := listCandidatesForPR(ctx, g, repo, pr, opts)
-		if err != nil {
-			if opts.StrictErrors {
+		// Collect only the data not already loaded from cache.
+		// Chain and force-push lookups are independent; run them concurrently.
+		// errgroup.WithContext ensures that if either goroutine returns a fatal
+		// error the derived context is canceled so the other goroutine stops
+		// making further API calls. Wait() guarantees no in-flight work continues
+		// after this block exits.
+		if needChain || needFP {
+			collEG, collCtx := errgroup.WithContext(ctx)
+			if needChain {
+				collEG.Go(func() error {
+					c, err := listCandidatesForPR(collCtx, g, repo, pr, opts)
+					if err != nil {
+						if opts.StrictErrors {
+							return err
+						}
+						logger.Warn("partial result: chain collection failed (lenient mode)", "pr", pr.GetNumber(), "error", err)
+						chainFailed = true
+						return nil
+					}
+					chain = c
+					return nil
+				})
+			}
+			if needFP {
+				collEG.Go(func() error {
+					fp, err := listForcePushedOutPRCommits(collCtx, g, repo, pr.GetNumber(), opts)
+					if err != nil {
+						if opts.StrictErrors {
+							return err
+						}
+						logger.Debug("skipping force-push based commit collection", "pr", pr.GetNumber(), "error", err)
+						fpFailed = true
+						return nil
+					}
+					forcePushed = fp
+					return nil
+				})
+			}
+			if err := collEG.Wait(); err != nil {
 				return err
 			}
-			logger.Warn("skipping PR: failed to collect chain candidates", "pr", pr.GetNumber(), "error", err)
-			continue
-		}
 
-		var forcePushed []*github.RepositoryCommit
-		if !opts.DisableForcePush {
-			fp, fpErr := listForcePushedOutPRCommits(ctx, g, repo, pr.GetNumber(), opts)
-			if fpErr != nil {
-				if opts.StrictErrors {
-					return fpErr
+			// Persist only when new data was fetched (partial or full cache miss).
+			// chainCollected/fpCollected flags in the entry tell future runs whether
+			// each collection was both enabled and successful.
+			// When a scope is disabled for this run, restore it from the existing
+			// cached entry so the write does not erase previously collected data.
+			if headSHA != "" {
+				saveChain, saveChainCollected := chain, chainEnabled && !chainFailed
+				saveFP, saveFPCollected := forcePushed, fpEnabled && !fpFailed
+				if !chainEnabled && cachedEntry != nil {
+					saveChain = reconstruct(cachedEntry.ChainCommits)
+					saveChainCollected = cachedEntry.ChainCollected
 				}
-				logger.Debug("skipping force-push based commit collection", "pr", pr.GetNumber(), "error", fpErr)
-			} else {
-				forcePushed = fp
+				if !fpEnabled && cachedEntry != nil {
+					saveFP = reconstruct(cachedEntry.ForcePushCommits)
+					saveFPCollected = cachedEntry.ForcePushCollected
+				}
+				cache.save(pr.GetNumber(), headSHA, saveChain, saveFP, saveChainCollected, saveFPCollected)
 			}
 		}
 
 		if len(chain) == 0 && len(forcePushed) == 0 {
-			// Cache the empty candidate list so this PR is skipped on resume.
-			if headSHA != "" {
-				cache.save(pr.GetNumber(), headSHA, nil, nil)
-			}
 			continue
-		}
-
-		// Persist candidates before running reachability checks so an interrupted
-		// run can skip candidate collection and re-run only reachability on resume.
-		if headSHA != "" {
-			cache.save(pr.GetNumber(), headSHA, chain, forcePushed)
 		}
 
 		if err := processPRCandidates(ctx, g, repo, pr, chain, forcePushed, opts, unreachableSHAs, visit); err != nil {
@@ -704,12 +770,40 @@ func FindDanglingCommits(ctx context.Context, g *GitHubClient, repo repository.R
 		blobCache = newCommitBlobCache(repo)
 	}
 	err := iterateDanglingCommits(ctx, g, repo, prs, opts, func(pr *github.PullRequest, commits []*github.RepositoryCommit) error {
-		for _, c := range commits {
+		// Fetch blob info for all unique commit SHAs in this PR concurrently.
+		// This avoids concurrent cache access for duplicate SHAs while preserving
+		// the original commit order in the output.
+		infos := make([]*commitBlobInfo, len(commits))
+		shaIndexes := make(map[string][]int, len(commits))
+		shaCommits := make(map[string]*github.RepositoryCommit, len(commits))
+		for i, c := range commits {
 			sha := c.GetSHA()
-			info, err := fetchCommitBlobInfo(ctx, g, repo, sha, opts, blobCache)
-			if err != nil {
-				return err
+			shaIndexes[sha] = append(shaIndexes[sha], i)
+			if _, ok := shaCommits[sha]; !ok {
+				shaCommits[sha] = c
 			}
+		}
+
+		eg, egCtx := errgroup.WithContext(ctx)
+		eg.SetLimit(opts.fetchConcurrency())
+		for sha := range shaCommits {
+			sha := sha
+			eg.Go(func() error {
+				info, err := fetchCommitBlobInfo(egCtx, g, repo, sha, opts, blobCache)
+				if err != nil {
+					return err
+				}
+				for _, idx := range shaIndexes[sha] {
+					infos[idx] = info
+				}
+				return nil
+			})
+		}
+		if err := eg.Wait(); err != nil {
+			return err
+		}
+		for i, c := range commits {
+			info := infos[i]
 			if info == nil {
 				continue
 			}
@@ -718,7 +812,7 @@ func FindDanglingCommits(ctx context.Context, g *GitHubClient, repo repository.R
 				message = info.Commit.GetCommit().GetMessage()
 			}
 			result = append(result, &DanglingCommit{
-				SHA:           sha,
+				SHA:           c.GetSHA(),
 				Message:       message,
 				PRNumber:      pr.GetNumber(),
 				PRURL:         pr.GetHTMLURL(),
@@ -762,14 +856,31 @@ func FindDanglingBlobs(ctx context.Context, g *GitHubClient, repo repository.Rep
 	// whereas unreachable blobs are per-PR-deduplicated via the visitor's seen map.
 	reachableBlobSHAs := make(map[string]bool)
 	err := iterateDanglingCommits(ctx, g, repo, prs, opts, func(pr *github.PullRequest, commits []*github.RepositoryCommit) error {
+		// Fetch blob info for all commits in this PR concurrently, then process
+		// results sequentially for correct blob deduplication and cross-PR caching.
+		infos := make([]*commitBlobInfo, len(commits))
+		eg, egCtx := errgroup.WithContext(ctx)
+		eg.SetLimit(opts.fetchConcurrency())
+		for i, c := range commits {
+			i, c := i, c
+			eg.Go(func() error {
+				info, err := fetchCommitBlobInfo(egCtx, g, repo, c.GetSHA(), opts, blobCache)
+				if err != nil {
+					return err
+				}
+				infos[i] = info
+				return nil
+			})
+		}
+		if err := eg.Wait(); err != nil {
+			return err
+		}
+
 		// Deduplicate blob SHAs within this PR to avoid redundant output.
 		seen := make(map[string]bool)
-		for _, c := range commits {
+		for i, c := range commits {
 			commitSHA := c.GetSHA()
-			info, err := fetchCommitBlobInfo(ctx, g, repo, commitSHA, opts, blobCache)
-			if err != nil {
-				return err
-			}
+			info := infos[i]
 			if info == nil {
 				continue
 			}

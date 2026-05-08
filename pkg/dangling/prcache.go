@@ -19,6 +19,15 @@ type prCacheEntry struct {
 	ChainCommits []cachedCommit `json:"chain_commits"`
 	// ForcePushCommits holds commits dropped by force-push events.
 	ForcePushCommits []cachedCommit `json:"force_push_commits"`
+	// ChainCollected records whether chain candidate collection completed
+	// successfully when this entry was written. A false value means the entry
+	// cannot be trusted for chain results if the current run needs them.
+	ChainCollected bool `json:"chain_collected"`
+	// ForcePushCollected records whether force-push candidate collection
+	// completed successfully when this entry was written. A false value means
+	// the entry cannot be trusted for force-push results if the current run
+	// needs them.
+	ForcePushCollected bool `json:"force_push_collected"`
 }
 
 // cachedCommit holds the SHA and parent SHAs of a commit.
@@ -80,11 +89,28 @@ func (c *prCache) load(prNumber int, headSHA string) *prCacheEntry {
 		logger.Debug("pr cache: ignoring corrupt entry", "path", p, "error", err)
 		return nil
 	}
+	// Backward compat: entries written before ChainCollected/ForcePushCollected
+	// were introduced have both flags as false zero values.
+	// For each scope, if the flag is false but the list is non-empty, the entry
+	// was written by old code with valid data, so treat it as collected.
+	// If the flag is false and the list is empty, coverage for that scope is
+	// unknown for older entries: collection may not have run, may have found no
+	// candidates, or may have been disabled. Leave the flag false so the caller
+	// re-collects that scope.
+	if !entry.ChainCollected && len(entry.ChainCommits) > 0 {
+		entry.ChainCollected = true
+	}
+	if !entry.ForcePushCollected && len(entry.ForcePushCommits) > 0 {
+		entry.ForcePushCollected = true
+	}
 	return &entry
 }
 
 // save writes the given chain and force-push candidate lists to the cache for the given PR.
-func (c *prCache) save(prNumber int, headSHA string, chain []*github.RepositoryCommit, forcePushed []*github.RepositoryCommit) {
+// chainCollected and fpCollected indicate whether each collection was enabled
+// and completed successfully so that a future load can detect when the cached
+// entry does not cover the collection scope of the current run.
+func (c *prCache) save(prNumber int, headSHA string, chain []*github.RepositoryCommit, forcePushed []*github.RepositoryCommit, chainCollected, fpCollected bool) {
 	if c == nil {
 		return
 	}
@@ -104,8 +130,10 @@ func (c *prCache) save(prNumber int, headSHA string, chain []*github.RepositoryC
 		return result
 	}
 	entry := prCacheEntry{
-		ChainCommits:     tocached(chain),
-		ForcePushCommits: tocached(forcePushed),
+		ChainCommits:       tocached(chain),
+		ForcePushCommits:   tocached(forcePushed),
+		ChainCollected:     chainCollected,
+		ForcePushCollected: fpCollected,
 	}
 	data, err := json.Marshal(entry)
 	if err != nil {
