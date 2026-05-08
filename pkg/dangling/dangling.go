@@ -754,19 +754,32 @@ func FindDanglingCommits(ctx context.Context, g *GitHubClient, repo repository.R
 		blobCache = newCommitBlobCache(repo)
 	}
 	err := iterateDanglingCommits(ctx, g, repo, prs, opts, func(pr *github.PullRequest, commits []*github.RepositoryCommit) error {
-		// Fetch blob info for all commits in this PR concurrently.
-		// Each commit has a unique SHA so concurrent cache access is safe.
+		// Fetch blob info for all unique commit SHAs in this PR concurrently.
+		// This avoids concurrent cache access for duplicate SHAs while preserving
+		// the original commit order in the output.
 		infos := make([]*commitBlobInfo, len(commits))
+		shaIndexes := make(map[string][]int, len(commits))
+		shaCommits := make(map[string]*github.RepositoryCommit, len(commits))
+		for i, c := range commits {
+			sha := c.GetSHA()
+			shaIndexes[sha] = append(shaIndexes[sha], i)
+			if _, ok := shaCommits[sha]; !ok {
+				shaCommits[sha] = c
+			}
+		}
+
 		eg, egCtx := errgroup.WithContext(ctx)
 		eg.SetLimit(opts.fetchConcurrency())
-		for i, c := range commits {
-			i, c := i, c
+		for sha := range shaCommits {
+			sha := sha
 			eg.Go(func() error {
-				info, err := fetchCommitBlobInfo(egCtx, g, repo, c.GetSHA(), opts, blobCache)
+				info, err := fetchCommitBlobInfo(egCtx, g, repo, sha, opts, blobCache)
 				if err != nil {
 					return err
 				}
-				infos[i] = info
+				for _, idx := range shaIndexes[sha] {
+					infos[idx] = info
+				}
 				return nil
 			})
 		}
