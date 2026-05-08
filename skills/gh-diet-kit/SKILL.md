@@ -65,7 +65,7 @@ commands:
         description: Format JSON output using a Go template
 
   - name: gh diet-kit dangling branches
-    description: List branches that have no associated pull request (open, closed, or merged), and calculate the total size of blobs introduced by commits unique to each branch. The default branch is always excluded. A commit is unique to a branch when it is not present in any other branch's commit history (commits ahead of the default branch). UNIQUE_SIZE is the sum of blob sizes from the diffs of those unique commits, with blob SHAs deduplicated. Outputs table (default) or JSON with fields BRANCH, COMMIT_SHA, AHEAD_COUNT, UNIQUE_SIZE.
+    description: List branches that have no associated pull request (open, closed, or merged), and calculate the total size of blobs introduced by commits unique to each branch. The default branch is always excluded. A commit is unique to a branch when it is not present in any other branch's commit history (commits ahead of the default branch). unique_blob_size is the sum of blob sizes from the diffs of those unique commits, with blob SHAs deduplicated. Outputs table (default) or JSON with fields name, commit_sha, ahead_count, unique_blob_size.
     usage: gh diet-kit dangling branches [flags]
     flags:
       - name: --format
