@@ -19,14 +19,14 @@ type prCacheEntry struct {
 	ChainCommits []cachedCommit `json:"chain_commits"`
 	// ForcePushCommits holds commits dropped by force-push events.
 	ForcePushCommits []cachedCommit `json:"force_push_commits"`
-	// ChainCollected records whether chain candidate collection was enabled
-	// (i.e., not disabled by opts for this PR type) when this entry was written.
-	// A false value means the entry cannot be trusted for chain results if the
-	// current run needs them.
+	// ChainCollected records whether chain candidate collection completed
+	// successfully when this entry was written. A false value means the entry
+	// cannot be trusted for chain results if the current run needs them.
 	ChainCollected bool `json:"chain_collected"`
-	// ForcePushCollected records whether force-push candidate collection was
-	// attempted when this entry was written. A false value means the entry
-	// cannot be trusted for force-push results if the current run needs them.
+	// ForcePushCollected records whether force-push candidate collection
+	// completed successfully when this entry was written. A false value means
+	// the entry cannot be trusted for force-push results if the current run
+	// needs them.
 	ForcePushCollected bool `json:"force_push_collected"`
 }
 
