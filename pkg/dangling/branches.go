@@ -81,7 +81,14 @@ func FindBranchesWithoutPR(ctx context.Context, g *GitHubClient, repo repository
 	// This is used to determine which commits are unique to a given branch.
 	logger.Info("comparing all branches against default branch", "default", defaultBranch)
 	compareResults := make(map[string]*branchCompareResult, len(branches))
+	// failedComparisons tracks branches whose CompareCommits call failed.
+	// If any branch other than the one being analyzed failed, uniqueness cannot be
+	// guaranteed and UniqueBlobSize is left nil for that branch.
+	failedComparisons := make(map[string]bool)
 	for _, b := range branches {
+		if err := ctx.Err(); err != nil {
+			return nil, err
+		}
 		name := b.GetName()
 		if name == defaultBranch {
 			compareResults[name] = &branchCompareResult{aheadBy: 0, shas: map[string]bool{}}
@@ -90,7 +97,7 @@ func FindBranchesWithoutPR(ctx context.Context, g *GitHubClient, repo repository
 		comp, compErr := g.CompareCommits(ctx, repo.Owner, repo.Name, defaultBranch, name)
 		if compErr != nil {
 			logger.Warn("failed to compare branch against default", "branch", name, "error", compErr)
-			compareResults[name] = &branchCompareResult{aheadBy: -1, shas: map[string]bool{}}
+			failedComparisons[name] = true
 			continue
 		}
 		shaSet := make(map[string]bool, len(comp.Commits))
@@ -119,6 +126,9 @@ func FindBranchesWithoutPR(ctx context.Context, g *GitHubClient, repo repository
 	// compute the total blob size introduced by those commits.
 	var results []*NoPRBranch
 	for _, b := range branches {
+		if err := ctx.Err(); err != nil {
+			return nil, err
+		}
 		name := b.GetName()
 		commitSHA := b.GetCommit().GetSHA()
 
@@ -137,7 +147,8 @@ func FindBranchesWithoutPR(ctx context.Context, g *GitHubClient, repo repository
 			aheadCount = cr.aheadBy
 		}
 
-		// Commits present only in this branch (count==1 means no other branch contains it).
+		// Commits present only in this branch (count==1 means no other successfully
+		// compared branch contains it).
 		var uniqueSHAs []string
 		if cr != nil {
 			for sha := range cr.shas {
@@ -147,41 +158,73 @@ func FindBranchesWithoutPR(ctx context.Context, g *GitHubClient, repo repository
 			}
 		}
 
-		// Fetch the branch tip tree once to get blob SHA→size mapping, then walk
-		// the diff of each unique commit and sum the sizes of blobs it introduces.
-		// Blob SHAs are deduplicated so a blob appearing in multiple commits is
-		// counted only once.
-		// Skip computation when the compare against the default branch failed so
-		// UniqueBlobSize remains unknown rather than being reported as zero.
+		// anyOtherFailed is true when at least one branch other than this one had a
+		// failed CompareCommits. In that case we cannot guarantee these commits are
+		// truly unique (the failed branch might share them), so UniqueBlobSize is
+		// left nil to avoid reporting an inflated value.
+		anyOtherFailed := false
+		for failedName := range failedComparisons {
+			if failedName != name {
+				anyOtherFailed = true
+				break
+			}
+		}
+
+		// Fetch per-commit trees and sum blob sizes introduced by unique commits.
+		// Using the branch tip tree would miss blobs that were modified or deleted
+		// after the commit, so each commit's own tree is used instead.
+		// Blob SHAs are deduplicated across commits before summing.
+		// If any commit's tree fetch fails, or if any other branch's comparison
+		// failed (making uniqueness unverifiable), UniqueBlobSize is left nil.
 		var uniqueBlobSize *uint64
-		if aheadCount >= 0 && cr != nil {
-			blobSizeMap, treeErr := fetchBranchBlobSizeMap(ctx, g, repo, name)
-			if treeErr != nil {
-				logger.Warn("failed to fetch branch tree", "branch", name, "error", treeErr)
-			} else {
-				seen := make(map[string]bool)
-				var total uint64
-				for _, sha := range uniqueSHAs {
-					commit, commitErr := g.GetCommit(ctx, repo.Owner, repo.Name, sha)
-					if commitErr != nil {
-						logger.Warn("failed to get commit diff", "sha", sha, "branch", name, "error", commitErr)
+		if aheadCount >= 0 && cr != nil && !anyOtherFailed {
+			seen := make(map[string]bool)
+			var total uint64
+			sizeKnown := true
+			for _, sha := range uniqueSHAs {
+				if err := ctx.Err(); err != nil {
+					return nil, err
+				}
+				commit, commitErr := g.GetCommit(ctx, repo.Owner, repo.Name, sha)
+				if commitErr != nil {
+					logger.Warn("failed to get commit diff", "sha", sha, "branch", name, "error", commitErr)
+					continue
+				}
+				var blobSizeMap map[string]int
+				if innerCommit := commit.GetCommit(); innerCommit != nil {
+					if treeSHA := innerCommit.GetTree().GetSHA(); treeSHA != "" {
+						tree, treeErr := g.GetGitTreeRecursive(ctx, repo.Owner, repo.Name, treeSHA)
+						if treeErr != nil {
+							logger.Warn("failed to fetch commit tree", "sha", sha, "branch", name, "error", treeErr)
+							sizeKnown = false
+						} else {
+							blobSizeMap = make(map[string]int, len(tree.Entries))
+							for _, entry := range tree.Entries {
+								if entry.GetType() == "blob" {
+									blobSizeMap[entry.GetSHA()] = entry.GetSize()
+								}
+							}
+						}
+					}
+				}
+				for _, f := range commit.Files {
+					status := f.GetStatus()
+					if status == "removed" || (status == "renamed" && f.GetChanges() == 0) {
 						continue
 					}
-					for _, f := range commit.Files {
-						status := f.GetStatus()
-						if status == "removed" || (status == "renamed" && f.GetChanges() == 0) {
-							continue
-						}
-						blobSHA := f.GetSHA()
-						if blobSHA == "" || seen[blobSHA] {
-							continue
-						}
-						seen[blobSHA] = true
+					blobSHA := f.GetSHA()
+					if blobSHA == "" || seen[blobSHA] {
+						continue
+					}
+					seen[blobSHA] = true
+					if blobSizeMap != nil {
 						if sz, ok := blobSizeMap[blobSHA]; ok {
 							total += uint64(sz)
 						}
 					}
 				}
+			}
+			if sizeKnown {
 				uniqueBlobSize = &total
 			}
 		}
@@ -195,34 +238,6 @@ func FindBranchesWithoutPR(ctx context.Context, g *GitHubClient, repo repository
 	}
 
 	return results, nil
-}
-
-// fetchBranchBlobSizeMap fetches the recursive git tree for the branch's tip commit
-// and returns a map of blob SHA to size in bytes.
-func fetchBranchBlobSizeMap(ctx context.Context, g *GitHubClient, repo repository.Repository, branch string) (map[string]int, error) {
-	commitSHA, err := g.GetCommitSHA1(ctx, repo.Owner, repo.Name, branch, "")
-	if err != nil {
-		return nil, fmt.Errorf("failed to resolve branch %q: %w", branch, err)
-	}
-
-	gitCommit, err := g.GetGitCommit(ctx, repo.Owner, repo.Name, commitSHA)
-	if err != nil {
-		return nil, fmt.Errorf("failed to get git commit %q: %w", commitSHA, err)
-	}
-
-	treeSHA := gitCommit.GetTree().GetSHA()
-	gitTree, err := g.GetGitTreeRecursive(ctx, repo.Owner, repo.Name, treeSHA)
-	if err != nil {
-		return nil, fmt.Errorf("failed to traverse git tree for branch %q: %w", branch, err)
-	}
-
-	blobSizeMap := make(map[string]int, len(gitTree.Entries))
-	for _, entry := range gitTree.Entries {
-		if entry.GetType() == "blob" {
-			blobSizeMap[entry.GetSHA()] = entry.GetSize()
-		}
-	}
-	return blobSizeMap, nil
 }
 
 // SortNoPRBranchesBy sorts branches in-place by the given field name (case-insensitive).
