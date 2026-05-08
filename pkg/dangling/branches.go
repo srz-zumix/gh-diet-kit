@@ -152,35 +152,39 @@ func FindBranchesWithoutPR(ctx context.Context, g *GitHubClient, repo repository
 		// the diff of each unique commit and sum the sizes of blobs it introduces.
 		// Blob SHAs are deduplicated so a blob appearing in multiple commits is
 		// counted only once.
+		// Skip computation when the compare against the default branch failed so
+		// UniqueBlobSize remains unknown rather than being reported as zero.
 		var uniqueBlobSize *uint64
-		blobSizeMap, treeErr := fetchBranchBlobSizeMap(ctx, g, repo, name)
-		if treeErr != nil {
-			logger.Warn("failed to fetch branch tree", "branch", name, "error", treeErr)
-		} else {
-			seen := make(map[string]bool)
-			var total uint64
-			for _, sha := range uniqueSHAs {
-				commit, commitErr := g.GetCommit(ctx, repo.Owner, repo.Name, sha)
-				if commitErr != nil {
-					logger.Warn("failed to get commit diff", "sha", sha, "branch", name, "error", commitErr)
-					continue
-				}
-				for _, f := range commit.Files {
-					status := f.GetStatus()
-					if status == "removed" || (status == "renamed" && f.GetChanges() == 0) {
+		if aheadCount >= 0 && cr != nil {
+			blobSizeMap, treeErr := fetchBranchBlobSizeMap(ctx, g, repo, name)
+			if treeErr != nil {
+				logger.Warn("failed to fetch branch tree", "branch", name, "error", treeErr)
+			} else {
+				seen := make(map[string]bool)
+				var total uint64
+				for _, sha := range uniqueSHAs {
+					commit, commitErr := g.GetCommit(ctx, repo.Owner, repo.Name, sha)
+					if commitErr != nil {
+						logger.Warn("failed to get commit diff", "sha", sha, "branch", name, "error", commitErr)
 						continue
 					}
-					blobSHA := f.GetSHA()
-					if blobSHA == "" || seen[blobSHA] {
-						continue
-					}
-					seen[blobSHA] = true
-					if sz, ok := blobSizeMap[blobSHA]; ok {
-						total += uint64(sz)
+					for _, f := range commit.Files {
+						status := f.GetStatus()
+						if status == "removed" || (status == "renamed" && f.GetChanges() == 0) {
+							continue
+						}
+						blobSHA := f.GetSHA()
+						if blobSHA == "" || seen[blobSHA] {
+							continue
+						}
+						seen[blobSHA] = true
+						if sz, ok := blobSizeMap[blobSHA]; ok {
+							total += uint64(sz)
+						}
 					}
 				}
+				uniqueBlobSize = &total
 			}
-			uniqueBlobSize = &total
 		}
 
 		results = append(results, &NoPRBranch{
