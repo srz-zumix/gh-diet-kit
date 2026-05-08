@@ -63,9 +63,15 @@ func FindBranchesWithoutPR(ctx context.Context, g *GitHubClient, repo repository
 	}
 	logger.Info("found pull requests", "count", len(prs))
 
+	targetRepoFullName := fmt.Sprintf("%s/%s", repo.Owner, repo.Name)
 	prHeadRefs := make(map[string]bool, len(prs))
 	for _, pr := range prs {
-		if ref := pr.GetHead().GetRef(); ref != "" {
+		head := pr.GetHead()
+		headRepo := head.GetRepo()
+		if headRepo == nil || headRepo.GetFullName() != targetRepoFullName {
+			continue
+		}
+		if ref := head.GetRef(); ref != "" {
 			prHeadRefs[ref] = true
 		}
 	}
