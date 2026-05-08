@@ -105,7 +105,17 @@ func FindBranchesWithoutPR(ctx context.Context, g *GitHubClient, repo repository
 		}
 	}
 
-	// Step 2: For each no-PR branch, find commits unique to that branch and
+	// Step 2: Build a global SHA→branch-count map so that SHAs shared across
+	// multiple branches can be detected in O(1) per lookup rather than rebuilding
+	// an otherSHAs union for every branch (which would be O(branches × total_commits)).
+	shaCount := make(map[string]int)
+	for _, cr := range compareResults {
+		for sha := range cr.shas {
+			shaCount[sha]++
+		}
+	}
+
+	// Step 3: For each no-PR branch, find commits unique to that branch and
 	// compute the total blob size introduced by those commits.
 	var results []*NoPRBranch
 	for _, b := range branches {
@@ -127,22 +137,11 @@ func FindBranchesWithoutPR(ctx context.Context, g *GitHubClient, repo repository
 			aheadCount = cr.aheadBy
 		}
 
-		// Build a union of commit SHAs from every OTHER branch.
-		otherSHAs := make(map[string]bool)
-		for otherName, otherCR := range compareResults {
-			if otherName == name {
-				continue
-			}
-			for sha := range otherCR.shas {
-				otherSHAs[sha] = true
-			}
-		}
-
-		// Commits present only in this branch (not reachable from any other branch).
+		// Commits present only in this branch (count==1 means no other branch contains it).
 		var uniqueSHAs []string
 		if cr != nil {
 			for sha := range cr.shas {
-				if !otherSHAs[sha] {
+				if shaCount[sha] == 1 {
 					uniqueSHAs = append(uniqueSHAs, sha)
 				}
 			}
