@@ -93,8 +93,10 @@ func (c *prCache) load(prNumber int, headSHA string) *prCacheEntry {
 	// were introduced have both flags as false zero values.
 	// For each scope, if the flag is false but the list is non-empty, the entry
 	// was written by old code with valid data, so treat it as collected.
-	// If the flag is false and the list is empty, the collection may have failed;
-	// leave the flag false so the caller re-collects that scope.
+	// If the flag is false and the list is empty, coverage for that scope is
+	// unknown for older entries: collection may not have run, may have found no
+	// candidates, or may have been disabled. Leave the flag false so the caller
+	// re-collects that scope.
 	if !entry.ChainCollected && len(entry.ChainCommits) > 0 {
 		entry.ChainCollected = true
 	}
