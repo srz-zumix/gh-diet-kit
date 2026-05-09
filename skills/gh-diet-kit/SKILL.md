@@ -68,11 +68,19 @@ commands:
     description: List branches that have no associated pull request (open, closed, or merged), and calculate the total size of blobs introduced by commits unique to each branch. The default branch is always excluded. A commit is unique to a branch when it is not present in any other branch's commit history (commits ahead of the default branch). unique_blob_size is the sum of blob sizes from the diffs of those unique commits, with blob SHAs deduplicated. Outputs table (default) or JSON with fields name, commit_sha, ahead_count, unique_blob_size.
     usage: gh diet-kit dangling branches [flags]
     flags:
+      - name: --clear-cache
+        description: Clear the cache used for branch analysis before running (default: false)
       - name: --format
         description: Output format (json)
       - name: --jq
         shorthand: -q
         description: Filter JSON output using a jq expression
+      - name: --max-branches
+        description: Maximum number of branches to process (default: no limit)
+      - name: --max-commits
+        description: Maximum number of unique commits to inspect per branch (default: no limit)
+      - name: --no-cache
+        description: Disable use of the branch analysis cache for this run (default: false)
       - name: --order
         description: Sort order (asc or desc, default asc)
       - name: --repo
