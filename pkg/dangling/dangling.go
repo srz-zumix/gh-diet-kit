@@ -139,6 +139,10 @@ type DanglingOptions struct {
 	// used when fetching commit blob info within a single PR. Zero or negative uses
 	// commitFetchConcurrency as the default.
 	CommitFetchConcurrency int
+	// NoBlobSize skips all blob size computation. When true, TotalBlobSize is always
+	// nil in results and no GetCommit or GetGitTreeRecursive API calls are made.
+	// This significantly reduces the number of API calls for large repositories.
+	NoBlobSize bool
 }
 
 // fetchConcurrency returns the effective concurrency limit for commit blob fetches.
@@ -770,6 +774,21 @@ func FindDanglingCommits(ctx context.Context, g *GitHubClient, repo repository.R
 		blobCache = newCommitBlobCache(repo)
 	}
 	err := iterateDanglingCommits(ctx, g, repo, prs, opts, func(pr *github.PullRequest, commits []*github.RepositoryCommit) error {
+		// When blob size computation is disabled, skip all API calls for diff/tree
+		// and build results directly from the list-commits data already in hand.
+		if opts.NoBlobSize {
+			for _, c := range commits {
+				result = append(result, &DanglingCommit{
+					SHA:      c.GetSHA(),
+					Message:  c.GetCommit().GetMessage(),
+					PRNumber: pr.GetNumber(),
+					PRURL:    pr.GetHTMLURL(),
+					// TotalBlobSize: nil (skipped by --no-blob-size)
+				})
+			}
+			return nil
+		}
+
 		// Fetch blob info for all unique commit SHAs in this PR concurrently.
 		// This avoids concurrent cache access for duplicate SHAs while preserving
 		// the original commit order in the output.

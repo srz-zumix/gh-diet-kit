@@ -30,10 +30,11 @@ type prCacheEntry struct {
 	ForcePushCollected bool `json:"force_push_collected"`
 }
 
-// cachedCommit holds the SHA and parent SHAs of a commit.
+// cachedCommit holds the SHA, parent SHAs, and commit message of a commit.
 type cachedCommit struct {
 	SHA     string   `json:"sha"`
 	Parents []string `json:"parents"`
+	Message string   `json:"message,omitempty"`
 }
 
 // prCache manages the per-PR cache directory.
@@ -125,7 +126,11 @@ func (c *prCache) save(prNumber int, headSHA string, chain []*github.RepositoryC
 			for _, p := range commit.Parents {
 				parents = append(parents, p.GetSHA())
 			}
-			result = append(result, cachedCommit{SHA: commit.GetSHA(), Parents: parents})
+			result = append(result, cachedCommit{
+				SHA:     commit.GetSHA(),
+				Parents: parents,
+				Message: commit.GetCommit().GetMessage(),
+			})
 		}
 		return result
 	}
@@ -156,9 +161,11 @@ func reconstruct(cached []cachedCommit) []*github.RepositoryCommit {
 			pSHA := p
 			parents = append(parents, &github.Commit{SHA: &pSHA})
 		}
+		msg := cc.Message
 		commits = append(commits, &github.RepositoryCommit{
 			SHA:     &sha,
 			Parents: parents,
+			Commit:  &github.Commit{Message: &msg},
 		})
 	}
 	return commits

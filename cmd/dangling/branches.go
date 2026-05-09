@@ -23,6 +23,7 @@ func NewBranchesCmd() *cobra.Command {
 	var maxCommitsFlag int
 	var noCacheFlag bool
 	var clearCacheFlag bool
+	var noBlobSizeFlag bool
 	var exporter cmdutil.Exporter
 
 	cmd := &cobra.Command{
@@ -59,6 +60,7 @@ Output fields: BRANCH, COMMIT_SHA, AHEAD_COUNT, UNIQUE_SIZE`,
 				MaxUniqueCommits: maxCommitsFlag,
 				NoCache:          noCacheFlag,
 				ClearCache:       clearCacheFlag,
+				NoBlobSize:       noBlobSizeFlag,
 			}
 			branches, err := dangling.FindBranchesWithoutPR(ctx, g, repo, opts)
 			if err != nil {
@@ -91,6 +93,7 @@ Output fields: BRANCH, COMMIT_SHA, AHEAD_COUNT, UNIQUE_SIZE`,
 	f.IntVar(&maxCommitsFlag, "max-commits", 0, "Maximum number of unique commits fetched per branch for blob size computation (0 = unlimited)")
 	f.BoolVar(&noCacheFlag, "no-cache", false, "Disable the per-commit blob cache")
 	f.BoolVar(&clearCacheFlag, "clear-cache", false, "Clear the commit blob cache before starting")
+	f.BoolVar(&noBlobSizeFlag, "no-blob-size", false, "Skip blob size computation; UNIQUE_SIZE will be empty in output (reduces API calls significantly)")
 	cmdutil.StringEnumFlag(cmd, &sortFlag, "sort", "", "", []string{"branch", "ahead_count", "unique_size"}, "Sort by field")
 	cmdutil.StringEnumFlag(cmd, &orderFlag, "order", "", "asc", []string{"asc", "desc"}, "Sort order")
 	cmdutil.AddFormatFlags(cmd, &exporter)
