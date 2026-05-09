@@ -50,6 +50,10 @@ type BranchesOptions struct {
 	NoCache bool
 	// ClearCache clears the commit blob cache before starting the run.
 	ClearCache bool
+	// NoBlobSize skips all blob size computation. When true, UniqueBlobSize is
+	// always nil in results and no GetCommit or GetGitTreeRecursive API calls are
+	// made, significantly reducing the number of API calls for large repositories.
+	NoBlobSize bool
 }
 
 // FindBranchesWithoutPR returns all branches that have no associated pull request
@@ -207,6 +211,8 @@ func FindBranchesWithoutPR(ctx context.Context, g *GitHubClient, repo repository
 		switch {
 		case aheadCount < 0 || cr == nil || anyOtherFailed:
 			// Cannot compute: compare failed or uniqueness unverifiable.
+		case opts.NoBlobSize:
+			// Blob size computation disabled by the caller.
 		case opts.MaxBranches > 0 && branchesProcessed >= opts.MaxBranches:
 			// Branch blob-size limit reached; leave UniqueBlobSize nil.
 			if !blobLimitWarned {
