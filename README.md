@@ -90,8 +90,12 @@ gh diet-kit dangling branches [flags]
 
 | Flag | Shorthand | Default | Description |
 | ------ | ----------- | ------- | ------------- |
+| `--clear-cache` | | | Clear the cached branch analysis data before running |
 | `--format` | | table | Output format: `json` |
 | `--jq` | `-q` | | Filter JSON output using a jq expression |
+| `--max-branches` | | | Limit the number of branches to analyze |
+| `--max-commits` | | | Limit the number of commits inspected per branch |
+| `--no-cache` | | | Run without using cached branch analysis data |
 | `--order` | | `asc` | Sort order: `asc` or `desc` |
 | `--repo` | `-R` | current repository | Repository in `[HOST/]OWNER/REPO` format |
 | `--sort` | | | Sort by field: `branch`, `ahead_count`, `unique_size` |
