@@ -66,6 +66,34 @@ commands:
         shorthand: -t
         description: Format JSON output using a Go template
 
+  - name: gh diet-kit dangling branches
+    description: List branches that have no associated pull request (open, closed, or merged), and calculate the total size of blobs introduced by commits unique to each branch. The default branch is always excluded. A commit is unique to a branch when it is not present in any other branch's commit history (commits ahead of the default branch). unique_blob_size is the sum of blob sizes from the diffs of those unique commits, with blob SHAs deduplicated. Outputs table (default) or JSON with fields name, commit_sha, ahead_count, unique_blob_size.
+    usage: gh diet-kit dangling branches [flags]
+    flags:
+      - name: --clear-cache
+        description: Clear the cache used for branch analysis before running (default: false)
+      - name: --format
+        description: Output format (json)
+      - name: --jq
+        shorthand: -q
+        description: Filter JSON output using a jq expression
+      - name: --max-branches
+        description: Maximum number of branches to process (default: no limit)
+      - name: --max-commits
+        description: Maximum number of unique commits to inspect per branch (default: no limit)
+      - name: --no-cache
+        description: Disable use of the branch analysis cache for this run (default: false)
+      - name: --order
+        description: Sort order (asc or desc, default asc)
+      - name: --repo
+        shorthand: -R
+        description: Repository in "[HOST/]OWNER/REPO" format (default: current repository)
+      - name: --sort
+        description: Sort by field (branch, ahead_count, unique_size)
+      - name: --template
+        shorthand: -t
+        description: Format JSON output using a Go template
+
   - name: gh diet-kit dangling commits
     description: List commits from squash or rebase merged PRs, commits dropped by force-pushes on PR head branches, or commits from closed unmerged PRs, that are not reachable from any normal branch or tag ref. All detection methods are enabled by default. Outputs table (default) or JSON with fields SHA, PR_NUMBER, PR_URL, SIZE (total size of unique added or modified blobs in the commit diff, human-readable), MESSAGE. In JSON, SIZE is omitted when blob sizes are unavailable. Per-PR results are cached under the OS user cache directory (e.g. ~/.cache/gh-diet-kit/ on Linux) for resume support; use --no-cache to bypass. Use --clear-git-cache to clear and re-clone the git bare clone cache.
     usage: gh diet-kit dangling commits [flags]
@@ -216,6 +244,7 @@ gh diet-kit
 ├── completion                  # Generate shell completion scripts (bash, zsh, fish, powershell)
 ├── dangling                    # Find git objects not reachable from normal refs
 │   ├── blobs                   # List dangling blobs
+│   ├── branches                # List branches with no PR and their unique blob sizes
 │   ├── commits                 # List dangling commits
 │   └── local                   # List local commits that exist on remote but are unreachable locally
 ├── lfs                         # Git LFS utilities
@@ -262,6 +291,18 @@ gh diet-kit dangling blobs --no-closed --no-force-push --reachability-check loca
 gh diet-kit dangling blobs --no-closed --no-squash-merge
 # All methods, output as JSON
 gh diet-kit dangling blobs --format json | jq '.[] | .sha'
+```
+
+### `gh diet-kit dangling branches`
+
+List branches that have no associated pull request (open, closed, or merged) and calculate the total size of blobs introduced by commits unique to each branch. The default branch is always excluded. `UNIQUE_SIZE` is the sum of blob sizes from the diffs of commits that are not present in any other branch, with blob SHAs deduplicated.
+
+Output fields: `BRANCH`, `COMMIT_SHA`, `AHEAD_COUNT`, `UNIQUE_SIZE`.
+
+```sh
+gh diet-kit dangling branches -R owner/repo
+gh diet-kit dangling branches -R owner/repo --sort unique_size --order desc
+gh diet-kit dangling branches -R owner/repo --format json | jq '.[] | .name'
 ```
 
 ### `gh diet-kit dangling commits`

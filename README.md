@@ -77,6 +77,31 @@ gh diet-kit dangling blobs [flags]
 | `--strict-errors` | | `false` | Fail immediately on any API or git error instead of logging and continuing |
 | `--template` | `-t` | | Format JSON output using a Go template |
 
+#### dangling branches
+
+List branches that have no associated pull request (open, closed, or merged), and calculate the total size of blobs introduced by commits unique to each branch. The default branch is always excluded from results.
+
+A commit is considered unique to a branch when it is not present in any other branch's commit history (commits ahead of the default branch). `UNIQUE_SIZE` is the sum of blob sizes from the diffs of those unique commits, with blob SHAs deduplicated across commits — an approximation of the space that could be freed by deleting the branch.
+
+Output fields: `BRANCH`, `COMMIT_SHA`, `AHEAD_COUNT`, `UNIQUE_SIZE`.
+
+```sh
+gh diet-kit dangling branches [flags]
+```
+
+| Flag | Shorthand | Default | Description |
+| ------ | ----------- | ------- | ------------- |
+| `--clear-cache` | | | Clear the cached branch analysis data before running |
+| `--format` | | table | Output format: `json` |
+| `--jq` | `-q` | | Filter JSON output using a jq expression |
+| `--max-branches` | | | Limit the number of branches to analyze |
+| `--max-commits` | | | Limit the number of commits inspected per branch |
+| `--no-cache` | | | Run without using cached branch analysis data |
+| `--order` | | `asc` | Sort order: `asc` or `desc` |
+| `--repo` | `-R` | current repository | Repository in `[HOST/]OWNER/REPO` format |
+| `--sort` | | | Sort by field: `branch`, `ahead_count`, `unique_size` |
+| `--template` | `-t` | | Format JSON output using a Go template |
+
 #### dangling commits
 
 List commits that originate from squash or rebase merged pull requests, commits dropped by force-pushes on PR head branches, or commits from closed unmerged pull requests, and are not reachable from any normal branch or tag ref on the remote. All detection methods are enabled by default.
