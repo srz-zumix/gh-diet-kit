@@ -35,13 +35,38 @@ type branchCompareResult struct {
 	shas    map[string]bool
 }
 
+// BranchesOptions controls scanning behavior for FindBranchesWithoutPR.
+type BranchesOptions struct {
+	// MaxBranches limits the number of no-PR branches for which blob size
+	// computation is attempted. Zero or negative means unlimited. When the limit
+	// is reached, remaining branches are still listed but with UniqueBlobSize nil.
+	MaxBranches int
+	// MaxUniqueCommits limits the number of unique commits fetched per branch for
+	// blob size computation. Zero or negative means unlimited. When the limit is
+	// exceeded, UniqueBlobSize is set to nil for that branch to avoid a partial sum.
+	MaxUniqueCommits int
+	// NoCache disables the per-commit blob cache. When false (default), commit diff
+	// and blob size results are cached on disk and reused on subsequent runs.
+	NoCache bool
+	// ClearCache clears the commit blob cache before starting the run.
+	ClearCache bool
+}
+
 // FindBranchesWithoutPR returns all branches that have no associated pull request
 // (open, closed, or merged), excluding the repository's default branch.
 // For each such branch, AheadCount (commits ahead of the default branch) and
 // UniqueBlobSize (total blob size from commits present only in this branch) are
 // computed. Errors for individual branches are logged as warnings and do not abort
 // the scan.
-func FindBranchesWithoutPR(ctx context.Context, g *GitHubClient, repo repository.Repository) ([]*NoPRBranch, error) {
+func FindBranchesWithoutPR(ctx context.Context, g *GitHubClient, repo repository.Repository, opts BranchesOptions) ([]*NoPRBranch, error) {
+	var blobCache *commitBlobCache
+	if opts.ClearCache {
+		newCommitBlobCache(repo).clear()
+	}
+	if !opts.NoCache {
+		blobCache = newCommitBlobCache(repo)
+	}
+
 	defaultBranch, err := getDefaultBranch(ctx, g, repo)
 	if err != nil {
 		return nil, fmt.Errorf("failed to get default branch: %w", err)
@@ -125,6 +150,8 @@ func FindBranchesWithoutPR(ctx context.Context, g *GitHubClient, repo repository
 	// Step 3: For each no-PR branch, find commits unique to that branch and
 	// compute the total blob size introduced by those commits.
 	var results []*NoPRBranch
+	branchesProcessed := 0
+	blobLimitWarned := false
 	for _, b := range branches {
 		if err := ctx.Err(); err != nil {
 			return nil, err
@@ -177,7 +204,22 @@ func FindBranchesWithoutPR(ctx context.Context, g *GitHubClient, repo repository
 		// If any commit's tree fetch fails, or if any other branch's comparison
 		// failed (making uniqueness unverifiable), UniqueBlobSize is left nil.
 		var uniqueBlobSize *uint64
-		if aheadCount >= 0 && cr != nil && !anyOtherFailed {
+		switch {
+		case aheadCount < 0 || cr == nil || anyOtherFailed:
+			// Cannot compute: compare failed or uniqueness unverifiable.
+		case opts.MaxBranches > 0 && branchesProcessed >= opts.MaxBranches:
+			// Branch blob-size limit reached; leave UniqueBlobSize nil.
+			if !blobLimitWarned {
+				logger.Warn("branch blob-size limit reached, remaining branches will have unknown blob sizes",
+					"limit", opts.MaxBranches)
+				blobLimitWarned = true
+			}
+		case opts.MaxUniqueCommits > 0 && len(uniqueSHAs) > opts.MaxUniqueCommits:
+			// Too many unique commits; skip to avoid a partial (misleading) sum.
+			logger.Warn("unique commit limit exceeded, skipping blob size computation",
+				"branch", name, "unique_commits", len(uniqueSHAs), "limit", opts.MaxUniqueCommits)
+		default:
+			branchesProcessed++
 			seen := make(map[string]bool)
 			var total uint64
 			sizeKnown := true
@@ -185,29 +227,36 @@ func FindBranchesWithoutPR(ctx context.Context, g *GitHubClient, repo repository
 				if err := ctx.Err(); err != nil {
 					return nil, err
 				}
-				commit, commitErr := g.GetCommit(ctx, repo.Owner, repo.Name, sha)
-				if commitErr != nil {
-					logger.Warn("failed to get commit diff", "sha", sha, "branch", name, "error", commitErr)
-					continue
-				}
-				var blobSizeMap map[string]int
-				if innerCommit := commit.GetCommit(); innerCommit != nil {
-					if treeSHA := innerCommit.GetTree().GetSHA(); treeSHA != "" {
-						tree, treeErr := g.GetGitTreeRecursive(ctx, repo.Owner, repo.Name, treeSHA)
-						if treeErr != nil {
-							logger.Warn("failed to fetch commit tree", "sha", sha, "branch", name, "error", treeErr)
-							sizeKnown = false
-						} else {
-							blobSizeMap = make(map[string]int, len(tree.Entries))
-							for _, entry := range tree.Entries {
-								if entry.GetType() == "blob" {
-									blobSizeMap[entry.GetSHA()] = entry.GetSize()
+				var info *commitBlobInfo
+				if cached := blobCache.load(sha); cached != nil {
+					logger.Debug("commit blob cache hit", "sha", sha)
+					info = cached.toCommitBlobInfo()
+				} else {
+					commit, commitErr := g.GetCommit(ctx, repo.Owner, repo.Name, sha)
+					if commitErr != nil {
+						logger.Warn("failed to get commit diff", "sha", sha, "branch", name, "error", commitErr)
+						continue
+					}
+					info = &commitBlobInfo{Commit: commit}
+					if innerCommit := commit.GetCommit(); innerCommit != nil {
+						if treeSHA := innerCommit.GetTree().GetSHA(); treeSHA != "" {
+							tree, treeErr := g.GetGitTreeRecursive(ctx, repo.Owner, repo.Name, treeSHA)
+							if treeErr != nil {
+								logger.Warn("failed to fetch commit tree", "sha", sha, "branch", name, "error", treeErr)
+								sizeKnown = false
+							} else {
+								info.BlobSizeMap = make(map[string]int, len(tree.Entries))
+								for _, entry := range tree.Entries {
+									if entry.GetType() == "blob" {
+										info.BlobSizeMap[entry.GetSHA()] = entry.GetSize()
+									}
 								}
+								blobCache.save(sha, info)
 							}
 						}
 					}
 				}
-				for _, f := range commit.Files {
+				for _, f := range info.Commit.Files {
 					status := f.GetStatus()
 					if status == "removed" || (status == "renamed" && f.GetChanges() == 0) {
 						continue
@@ -217,8 +266,8 @@ func FindBranchesWithoutPR(ctx context.Context, g *GitHubClient, repo repository
 						continue
 					}
 					seen[blobSHA] = true
-					if blobSizeMap != nil {
-						if sz, ok := blobSizeMap[blobSHA]; ok {
+					if info.BlobSizeMap != nil {
+						if sz, ok := info.BlobSizeMap[blobSHA]; ok {
 							total += uint64(sz)
 						}
 					}

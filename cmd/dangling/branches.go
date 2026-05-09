@@ -19,6 +19,10 @@ func NewBranchesCmd() *cobra.Command {
 	var repoFlag string
 	var sortFlag string
 	var orderFlag string
+	var maxBranchesFlag int
+	var maxCommitsFlag int
+	var noCacheFlag bool
+	var clearCacheFlag bool
 	var exporter cmdutil.Exporter
 
 	cmd := &cobra.Command{
@@ -50,7 +54,13 @@ Output fields: BRANCH, COMMIT_SHA, AHEAD_COUNT, UNIQUE_SIZE`,
 			}
 
 			logger.Info("searching for branches without pull requests")
-			branches, err := dangling.FindBranchesWithoutPR(ctx, g, repo)
+			opts := dangling.BranchesOptions{
+				MaxBranches:      maxBranchesFlag,
+				MaxUniqueCommits: maxCommitsFlag,
+				NoCache:          noCacheFlag,
+				ClearCache:       clearCacheFlag,
+			}
+			branches, err := dangling.FindBranchesWithoutPR(ctx, g, repo, opts)
 			if err != nil {
 				return fmt.Errorf("failed to find branches without pull requests: %w", err)
 			}
@@ -77,6 +87,10 @@ Output fields: BRANCH, COMMIT_SHA, AHEAD_COUNT, UNIQUE_SIZE`,
 
 	f := cmd.Flags()
 	f.StringVarP(&repoFlag, "repo", "R", "", "Repository in \"[HOST/]OWNER/REPO\" format (default: current repository)")
+	f.IntVar(&maxBranchesFlag, "max-branches", 0, "Maximum number of no-PR branches for which blob sizes are computed (0 = unlimited)")
+	f.IntVar(&maxCommitsFlag, "max-commits", 0, "Maximum number of unique commits fetched per branch for blob size computation (0 = unlimited)")
+	f.BoolVar(&noCacheFlag, "no-cache", false, "Disable the per-commit blob cache")
+	f.BoolVar(&clearCacheFlag, "clear-cache", false, "Clear the commit blob cache before starting")
 	cmdutil.StringEnumFlag(cmd, &sortFlag, "sort", "", "", []string{"branch", "ahead_count", "unique_size"}, "Sort by field")
 	cmdutil.StringEnumFlag(cmd, &orderFlag, "order", "", "asc", []string{"asc", "desc"}, "Sort order")
 	cmdutil.AddFormatFlags(cmd, &exporter)
