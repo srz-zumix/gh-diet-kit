@@ -234,6 +234,7 @@ func FindBranchesWithoutPR(ctx context.Context, g *GitHubClient, repo repository
 				} else {
 					commit, commitErr := g.GetCommit(ctx, repo.Owner, repo.Name, sha)
 					if commitErr != nil {
+						sizeKnown = false
 						logger.Warn("failed to get commit diff", "sha", sha, "branch", name, "error", commitErr)
 						continue
 					}
