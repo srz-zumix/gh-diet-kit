@@ -19,7 +19,7 @@ type NoPRBranch struct {
 	// CommitSHA is the SHA of the branch tip commit.
 	CommitSHA string `json:"commit_sha"`
 	// Author is the GitHub login (or git author name as fallback) of the tip commit author.
-	// Empty when the author could not be determined.
+	// Omitted from JSON when the author could not be determined.
 	Author string `json:"author,omitempty"`
 	// AheadCount is the number of commits this branch is ahead of the default branch.
 	// -1 when the comparison failed.
