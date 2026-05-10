@@ -111,14 +111,17 @@ func FindBranchesWithoutPR(ctx context.Context, g *GitHubClient, repo repository
 			continue
 		}
 		// Check for associated pull requests. When the branch has any PR (any state),
-		// skip it and avoid the CompareCommits call entirely.
+		// skip it and avoid the CompareCommits call entirely. If the lookup fails,
+		// skip the branch conservatively so only branches confirmed to have no PR
+		// are considered for reporting.
 		assocPRs, assocErr := gh.GetAssociatedPullRequestsForRef(ctx, g, repo, name,
 			gh.AssociatedPullRequestsOptionStateOpen(),
 			gh.AssociatedPullRequestsOptionStateClosed(),
 			gh.AssociatedPullRequestsOptionStateMerged(),
 		)
 		if assocErr != nil {
-			logger.Warn("failed to check associated pull requests; treating as no-PR branch", "branch", name, "error", assocErr)
+			logger.Warn("failed to check associated pull requests; skipping branch", "branch", name, "error", assocErr)
+			continue
 		} else if len(assocPRs) > 0 {
 			logger.Debug("skipping branch with associated pull requests", "branch", name, "pr_count", len(assocPRs))
 			prBranches[name] = true
