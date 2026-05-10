@@ -81,8 +81,9 @@ func FindBranchesWithoutPR(ctx context.Context, g *GitHubClient, repo repository
 	}
 	logger.Info("resolved default branch", "branch", defaultBranch)
 
-	logger.Info("listing branches")
-	branches, err := g.ListBranches(ctx, repo.Owner, repo.Name, nil)
+	logger.Info("listing unprotected branches")
+	protectedFalse := false
+	branches, err := g.ListBranches(ctx, repo.Owner, repo.Name, &protectedFalse)
 	if err != nil {
 		return nil, fmt.Errorf("failed to list branches: %w", err)
 	}
