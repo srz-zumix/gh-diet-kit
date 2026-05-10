@@ -40,7 +40,7 @@ by deleting the branch.
 
 The default branch is always excluded from results.
 
-Output fields: BRANCH, COMMIT_SHA, AHEAD_COUNT, UNIQUE_SIZE`,
+Output fields: BRANCH, COMMIT_SHA, AHEAD_COUNT, AUTHOR, UNIQUE_SIZE`,
 		RunE: func(cmd *cobra.Command, args []string) error {
 			ctx := cmd.Context()
 

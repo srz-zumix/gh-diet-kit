@@ -18,6 +18,9 @@ type NoPRBranch struct {
 	Name string `json:"name"`
 	// CommitSHA is the SHA of the branch tip commit.
 	CommitSHA string `json:"commit_sha"`
+	// Author is the GitHub login (or git author name as fallback) of the tip commit author.
+	// Empty when the author could not be determined.
+	Author string `json:"author,omitempty"`
 	// AheadCount is the number of commits this branch is ahead of the default branch.
 	// -1 when the comparison failed.
 	AheadCount int `json:"ahead_count"`
@@ -28,11 +31,12 @@ type NoPRBranch struct {
 	UniqueBlobSize *uint64 `json:"unique_blob_size,omitempty"`
 }
 
-// branchCompareResult holds the ahead-count and set of commit SHAs that are ahead
-// of the default branch for a single branch.
+// branchCompareResult holds the ahead-count, set of commit SHAs that are ahead
+// of the default branch, and the resolved author of the tip commit for a single branch.
 type branchCompareResult struct {
-	aheadBy int
-	shas    map[string]bool
+	aheadBy   int
+	shas      map[string]bool
+	tipAuthor string // GitHub login or git author name of the tip commit; empty if unknown
 }
 
 // BranchesOptions controls scanning behavior for FindBranchesWithoutPR.
@@ -84,36 +88,19 @@ func FindBranchesWithoutPR(ctx context.Context, g *GitHubClient, repo repository
 	}
 	logger.Info("found branches", "count", len(branches))
 
-	// List all PRs (any state) once to build a set of head ref names that have PRs.
-	logger.Info("listing pull requests (all states)")
-	prs, err := gh.ListPullRequests(ctx, g, repo, gh.ListPullRequestsOptionStateAll())
-	if err != nil {
-		return nil, fmt.Errorf("failed to list pull requests: %w", err)
-	}
-	logger.Info("found pull requests", "count", len(prs))
-
-	targetRepoFullName := fmt.Sprintf("%s/%s", repo.Owner, repo.Name)
-	prHeadRefs := make(map[string]bool, len(prs))
-	for _, pr := range prs {
-		head := pr.GetHead()
-		headRepo := head.GetRepo()
-		if headRepo == nil || headRepo.GetFullName() != targetRepoFullName {
-			continue
-		}
-		if ref := head.GetRef(); ref != "" {
-			prHeadRefs[ref] = true
-		}
-	}
-
-	// Step 1: For each branch, compare against the default branch to collect the
-	// set of commit SHAs that are ahead of (not reachable from) the default branch.
-	// This is used to determine which commits are unique to a given branch.
-	logger.Info("comparing all branches against default branch", "default", defaultBranch)
+	// Step 1: For each branch, check whether it has any associated pull requests
+	// (open, closed, or merged) via a targeted GraphQL query. Branches with PRs are
+	// excluded from results and their CompareCommits call is skipped, significantly
+	// reducing API calls on repos with many PRs.
+	// Note: uniqueness is computed relative to other no-PR branches only; commits
+	// shared with PR-having branches are not accounted for.
+	logger.Info("checking branches for associated pull requests and comparing against default", "default", defaultBranch)
 	compareResults := make(map[string]*branchCompareResult, len(branches))
-	// failedComparisons tracks branches whose CompareCommits call failed.
-	// If any branch other than the one being analyzed failed, uniqueness cannot be
-	// guaranteed and UniqueBlobSize is left nil for that branch.
+	// failedComparisons tracks no-PR branches whose CompareCommits call failed.
+	// If any such branch failed, uniqueness cannot be guaranteed for other no-PR
+	// branches and UniqueBlobSize is left nil for those branches.
 	failedComparisons := make(map[string]bool)
+	prBranches := make(map[string]bool)
 	for _, b := range branches {
 		if err := ctx.Err(); err != nil {
 			return nil, err
@@ -121,6 +108,20 @@ func FindBranchesWithoutPR(ctx context.Context, g *GitHubClient, repo repository
 		name := b.GetName()
 		if name == defaultBranch {
 			compareResults[name] = &branchCompareResult{aheadBy: 0, shas: map[string]bool{}}
+			continue
+		}
+		// Check for associated pull requests. When the branch has any PR (any state),
+		// skip it and avoid the CompareCommits call entirely.
+		assocPRs, assocErr := gh.GetAssociatedPullRequestsForRef(ctx, g, repo, name,
+			gh.AssociatedPullRequestsOptionStateOpen(),
+			gh.AssociatedPullRequestsOptionStateClosed(),
+			gh.AssociatedPullRequestsOptionStateMerged(),
+		)
+		if assocErr != nil {
+			logger.Warn("failed to check associated pull requests; treating as no-PR branch", "branch", name, "error", assocErr)
+		} else if len(assocPRs) > 0 {
+			logger.Debug("skipping branch with associated pull requests", "branch", name, "pr_count", len(assocPRs))
+			prBranches[name] = true
 			continue
 		}
 		comp, compErr := g.CompareCommits(ctx, repo.Owner, repo.Name, defaultBranch, name)
@@ -135,9 +136,25 @@ func FindBranchesWithoutPR(ctx context.Context, g *GitHubClient, repo repository
 				shaSet[sha] = true
 			}
 		}
+		// Extract author from the last commit in the compare result if it matches the
+		// branch tip SHA. When aheadBy > 250 the GitHub API returns only the oldest
+		// commits so the tip may not be present; in that case tipAuthor stays empty
+		// and is resolved via GetCommit in Step 3.
+		var tipAuthor string
+		if n := len(comp.Commits); n > 0 {
+			tip := comp.Commits[n-1]
+			if tip.GetSHA() == b.GetCommit().GetSHA() {
+				if login := tip.GetAuthor().GetLogin(); login != "" {
+					tipAuthor = login
+				} else {
+					tipAuthor = tip.GetCommit().GetAuthor().GetName()
+				}
+			}
+		}
 		compareResults[name] = &branchCompareResult{
-			aheadBy: comp.GetAheadBy(),
-			shas:    shaSet,
+			aheadBy:   comp.GetAheadBy(),
+			shas:      shaSet,
+			tipAuthor: tipAuthor,
 		}
 	}
 
@@ -166,7 +183,7 @@ func FindBranchesWithoutPR(ctx context.Context, g *GitHubClient, repo repository
 		if name == defaultBranch {
 			continue
 		}
-		if prHeadRefs[name] {
+		if prBranches[name] {
 			continue
 		}
 
@@ -176,6 +193,25 @@ func FindBranchesWithoutPR(ctx context.Context, g *GitHubClient, repo repository
 		aheadCount := -1
 		if cr != nil {
 			aheadCount = cr.aheadBy
+		}
+
+		// Resolve tip commit author. When the compare result already captured it
+		// (aheadBy <= 250), use it directly. Otherwise make a single GetCommit call
+		// for the tip so the author is always populated.
+		tipAuthor := ""
+		if cr != nil {
+			tipAuthor = cr.tipAuthor
+		}
+		if tipAuthor == "" && commitSHA != "" {
+			if c, err := g.GetCommit(ctx, repo.Owner, repo.Name, commitSHA); err == nil {
+				if login := c.GetAuthor().GetLogin(); login != "" {
+					tipAuthor = login
+				} else {
+					tipAuthor = c.GetCommit().GetAuthor().GetName()
+				}
+			} else {
+				logger.Warn("failed to get tip commit for author", "sha", commitSHA, "branch", name, "error", err)
+			}
 		}
 
 		// Commits present only in this branch (count==1 means no other successfully
@@ -288,6 +324,7 @@ func FindBranchesWithoutPR(ctx context.Context, g *GitHubClient, repo repository
 		results = append(results, &NoPRBranch{
 			Name:           name,
 			CommitSHA:      commitSHA,
+			Author:         tipAuthor,
 			AheadCount:     aheadCount,
 			UniqueBlobSize: uniqueBlobSize,
 		})
