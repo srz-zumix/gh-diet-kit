@@ -33,14 +33,16 @@ func NewBranchesCmd() *cobra.Command {
 and calculate the total size of blobs introduced by commits unique to each branch.
 
 A commit is considered unique to a branch when it is not present in any other
-branch's commit history (commits ahead of the default branch). UNIQUE_SIZE is
-the sum of blob sizes from the diffs of those unique commits, with blob SHAs
-deduplicated across commits — an approximation of the space that could be freed
-by deleting the branch.
+no-PR branch's commit history (commits ahead of the default branch). Commits
+shared with branches that have an associated pull request are not considered
+because those branches are excluded from the scan. UNIQUE_SIZE is the sum of
+blob sizes from the diffs of those unique commits, with blob SHAs deduplicated
+across commits — an approximation of the space that could be freed by deleting
+the branch.
 
 The default branch is always excluded from results.
 
-Output fields: BRANCH, COMMIT_SHA, AHEAD_COUNT, UNIQUE_SIZE`,
+Output fields: BRANCH, COMMIT_SHA, AHEAD_COUNT, AUTHOR, UNIQUE_SIZE`,
 		RunE: func(cmd *cobra.Command, args []string) error {
 			ctx := cmd.Context()
 

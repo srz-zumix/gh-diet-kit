@@ -81,9 +81,9 @@ gh diet-kit dangling blobs [flags]
 
 List branches that have no associated pull request (open, closed, or merged), and calculate the total size of blobs introduced by commits unique to each branch. The default branch is always excluded from results.
 
-A commit is considered unique to a branch when it is not present in any other branch's commit history (commits ahead of the default branch). `UNIQUE_SIZE` is the sum of blob sizes from the diffs of those unique commits, with blob SHAs deduplicated across commits — an approximation of the space that could be freed by deleting the branch.
+A commit is considered unique to a branch when it is not present in any other no-PR branch's commit history (commits ahead of the default branch). Commits shared with branches that have an associated pull request are not considered because those branches are excluded from the scan. `UNIQUE_SIZE` is the sum of blob sizes from the diffs of those unique commits, with blob SHAs deduplicated across commits — an approximation of the space that could be freed by deleting the branch.
 
-Output fields: `BRANCH`, `COMMIT_SHA`, `AHEAD_COUNT`, `UNIQUE_SIZE`.
+Output fields: `BRANCH`, `COMMIT_SHA`, `AHEAD_COUNT`, `AUTHOR`, `UNIQUE_SIZE`.
 
 ```sh
 gh diet-kit dangling branches [flags]
@@ -94,8 +94,9 @@ gh diet-kit dangling branches [flags]
 | `--clear-cache` | | | Clear the cached branch analysis data before running |
 | `--format` | | table | Output format: `json` |
 | `--jq` | `-q` | | Filter JSON output using a jq expression |
-| `--max-branches` | | | Limit the number of branches to analyze |
-| `--max-commits` | | | Limit the number of commits inspected per branch |
+| `--max-branches` | | | Limit the number of no-PR branches for which blob sizes are computed (0 = unlimited) |
+| `--max-commits` | | | Limit the number of unique commits fetched per branch for blob size computation (0 = unlimited) |
+| `--no-blob-size` | | | Skip blob size computation; `UNIQUE_SIZE` will be empty in output |
 | `--no-cache` | | | Run without using cached branch analysis data |
 | `--order` | | `asc` | Sort order: `asc` or `desc` |
 | `--repo` | `-R` | current repository | Repository in `[HOST/]OWNER/REPO` format |

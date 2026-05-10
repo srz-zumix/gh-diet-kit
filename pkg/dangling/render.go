@@ -175,6 +175,9 @@ func newNoPRBranchFieldGetters() *noPRBranchFieldGetters {
 				}
 				return fmt.Sprintf("%d", b.AheadCount)
 			},
+			"AUTHOR": func(b *NoPRBranch) string {
+				return b.Author
+			},
 			"UNIQUE_SIZE": func(b *NoPRBranch) string {
 				if b.UniqueBlobSize == nil {
 					return ""
@@ -206,7 +209,7 @@ func (r *Renderer) RenderNoPRBranches(branches []*NoPRBranch, headers []string) 
 	}
 
 	if len(headers) == 0 {
-		headers = []string{"BRANCH", "COMMIT_SHA", "AHEAD_COUNT", "UNIQUE_SIZE"}
+		headers = []string{"BRANCH", "COMMIT_SHA", "AHEAD_COUNT", "AUTHOR", "UNIQUE_SIZE"}
 	}
 
 	getter := newNoPRBranchFieldGetters()
