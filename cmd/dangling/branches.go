@@ -28,9 +28,12 @@ func NewBranchesCmd() *cobra.Command {
 
 	cmd := &cobra.Command{
 		Use:   "branches",
-		Short: "List branches with no associated pull request and their unique blob sizes",
-		Long: `List branches that have no associated pull request (open, closed, or merged),
-and calculate the total size of blobs introduced by commits unique to each branch.
+		Short: "List unprotected branches with no associated pull request and their unique blob sizes",
+		Long: `List unprotected branches that have no associated pull request (open, closed,
+or merged), and calculate the total size of blobs introduced by commits unique
+to each branch.
+
+Protected branches and the default branch are always excluded from results.
 
 A commit is considered unique to a branch when it is not present in any other
 no-PR branch's commit history (commits ahead of the default branch). Commits
@@ -39,8 +42,6 @@ because those branches are excluded from the scan. UNIQUE_SIZE is the sum of
 blob sizes from the diffs of those unique commits, with blob SHAs deduplicated
 across commits — an approximation of the space that could be freed by deleting
 the branch.
-
-The default branch is always excluded from results.
 
 Output fields: BRANCH, COMMIT_SHA, AHEAD_COUNT, AUTHOR, UNIQUE_SIZE`,
 		RunE: func(cmd *cobra.Command, args []string) error {

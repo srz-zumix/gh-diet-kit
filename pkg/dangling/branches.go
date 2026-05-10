@@ -60,8 +60,9 @@ type BranchesOptions struct {
 	NoBlobSize bool
 }
 
-// FindBranchesWithoutPR returns all branches that have no associated pull request
-// (open, closed, or merged), excluding the repository's default branch.
+// FindBranchesWithoutPR returns all unprotected branches that have no associated
+// pull request (open, closed, or merged), excluding the repository's default branch
+// and all protected branches.
 // For each such branch, AheadCount (commits ahead of the default branch) and
 // UniqueBlobSize (total blob size from commits present only in this branch) are
 // computed. Errors for individual branches are logged as warnings and do not abort
