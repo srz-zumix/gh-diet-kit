@@ -60,8 +60,9 @@ type BranchesOptions struct {
 	NoBlobSize bool
 }
 
-// FindBranchesWithoutPR returns all branches that have no associated pull request
-// (open, closed, or merged), excluding the repository's default branch.
+// FindBranchesWithoutPR returns all unprotected branches that have no associated
+// pull request (open, closed, or merged), excluding the repository's default branch
+// and all protected branches.
 // For each such branch, AheadCount (commits ahead of the default branch) and
 // UniqueBlobSize (total blob size from commits present only in this branch) are
 // computed. Errors for individual branches are logged as warnings and do not abort
@@ -81,8 +82,9 @@ func FindBranchesWithoutPR(ctx context.Context, g *GitHubClient, repo repository
 	}
 	logger.Info("resolved default branch", "branch", defaultBranch)
 
-	logger.Info("listing branches")
-	branches, err := g.ListBranches(ctx, repo.Owner, repo.Name, nil)
+	logger.Info("listing unprotected branches")
+	protectedFalse := false
+	branches, err := g.ListBranches(ctx, repo.Owner, repo.Name, &protectedFalse)
 	if err != nil {
 		return nil, fmt.Errorf("failed to list branches: %w", err)
 	}

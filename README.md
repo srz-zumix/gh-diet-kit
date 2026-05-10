@@ -79,7 +79,7 @@ gh diet-kit dangling blobs [flags]
 
 #### dangling branches
 
-List branches that have no associated pull request (open, closed, or merged), and calculate the total size of blobs introduced by commits unique to each branch. The default branch is always excluded from results.
+List unprotected branches that have no associated pull request (open, closed, or merged), and calculate the total size of blobs introduced by commits unique to each branch. The default branch and all protected branches are always excluded from results.
 
 A commit is considered unique to a branch when it is not present in any other no-PR branch's commit history (commits ahead of the default branch). Commits shared with branches that have an associated pull request are not considered because those branches are excluded from the scan. `UNIQUE_SIZE` is the sum of blob sizes from the diffs of those unique commits, with blob SHAs deduplicated across commits — an approximation of the space that could be freed by deleting the branch.
 
