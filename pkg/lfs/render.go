@@ -1,12 +1,71 @@
 package lfs
 
 import (
+	"encoding/json"
+	"fmt"
 	"strings"
 
 	"github.com/cli/cli/v2/pkg/cmdutil"
 	"github.com/dustin/go-humanize"
 	"github.com/srz-zumix/go-gh-extension/pkg/render"
 )
+
+// SARIF 2.1.0 minimal types for LFS candidate output.
+
+type sarifLog struct {
+	Schema  string     `json:"$schema"`
+	Version string     `json:"version"`
+	Runs    []sarifRun `json:"runs"`
+}
+
+type sarifRun struct {
+	Tool    sarifTool     `json:"tool"`
+	Results []sarifResult `json:"results"`
+}
+
+type sarifTool struct {
+	Driver sarifDriver `json:"driver"`
+}
+
+type sarifDriver struct {
+	Name  string      `json:"name"`
+	Rules []sarifRule `json:"rules"`
+}
+
+type sarifRule struct {
+	ID               string             `json:"id"`
+	Name             string             `json:"name"`
+	ShortDescription sarifMessage       `json:"shortDescription"`
+	DefaultConfig    sarifDefaultConfig `json:"defaultConfiguration"`
+}
+
+type sarifDefaultConfig struct {
+	Level string `json:"level"`
+}
+
+type sarifMessage struct {
+	Text string `json:"text"`
+}
+
+type sarifResult struct {
+	RuleID    string          `json:"ruleId"`
+	Level     string          `json:"level"`
+	Message   sarifMessage    `json:"message"`
+	Locations []sarifLocation `json:"locations"`
+}
+
+type sarifLocation struct {
+	PhysicalLocation sarifPhysicalLocation `json:"physicalLocation"`
+}
+
+type sarifPhysicalLocation struct {
+	ArtifactLocation sarifArtifactLocation `json:"artifactLocation"`
+}
+
+type sarifArtifactLocation struct {
+	URI       string `json:"uri"`
+	URIBaseID string `json:"uriBaseId,omitempty"`
+}
 
 // Renderer extends go-gh-extension's Renderer with LFS-specific methods.
 type Renderer struct {
@@ -64,6 +123,59 @@ func (r *Renderer) RenderLFSCandidates(candidates []*LFSCandidate, headers []str
 		table.Append(row)
 	}
 	return table.Render()
+}
+
+// RenderLFSCandidatesAsSARIF writes the LFS candidates as a SARIF 2.1.0 document to stdout.
+func (r *Renderer) RenderLFSCandidatesAsSARIF(candidates []*LFSCandidate) error {
+	const ruleID = "lfs-candidate"
+
+	results := make([]sarifResult, 0, len(candidates))
+	for _, c := range candidates {
+		results = append(results, sarifResult{
+			RuleID: ruleID,
+			Level:  "warning",
+			Message: sarifMessage{
+				Text: fmt.Sprintf("File '%s' (%s) should be tracked by Git LFS", c.Path, humanize.Bytes(c.Size)),
+			},
+			Locations: []sarifLocation{
+				{
+					PhysicalLocation: sarifPhysicalLocation{
+						ArtifactLocation: sarifArtifactLocation{
+							URI:       c.Path,
+							URIBaseID: "%SRCROOT%",
+						},
+					},
+				},
+			},
+		})
+	}
+
+	log := sarifLog{
+		Schema:  "https://json.schemastore.org/sarif-2.1.0.json",
+		Version: "2.1.0",
+		Runs: []sarifRun{
+			{
+				Tool: sarifTool{
+					Driver: sarifDriver{
+						Name: "gh-diet-kit",
+						Rules: []sarifRule{
+							{
+								ID:               ruleID,
+								Name:             "LFSCandidate",
+								ShortDescription: sarifMessage{Text: "File should be tracked by Git LFS"},
+								DefaultConfig:    sarifDefaultConfig{Level: "warning"},
+							},
+						},
+					},
+				},
+				Results: results,
+			},
+		},
+	}
+
+	enc := json.NewEncoder(r.IO.Out)
+	enc.SetIndent("", "  ")
+	return enc.Encode(log)
 }
 
 type lfsEstimateFieldGetter func(e *LFSSavingEstimate) string
