@@ -95,7 +95,7 @@ func EstimateMigrationSavings(
 	threshold uint64,
 	scanCommitsDepth int,
 ) ([]*LFSSavingEstimate, *LFSMigrationSummary, error) {
-	candidates, err := DetectLFSCandidates(ctx, g, repo, ref, threshold)
+	candidates, err := DetectLFSCandidates(ctx, g, repo, ref, threshold, nil)
 	if err != nil {
 		return nil, nil, fmt.Errorf("failed to detect LFS candidates: %w", err)
 	}
