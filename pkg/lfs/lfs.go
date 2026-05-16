@@ -129,7 +129,7 @@ func DetectLFSCandidates(ctx context.Context, g *GitHubClient, repo repository.R
 		if uint64(entry.GetSize()) <= threshold {
 			continue
 		}
-		if len(paths) > 0 && !paths[entry.GetPath()] {
+		if paths != nil && !paths[entry.GetPath()] {
 			continue
 		}
 		candidates = append(candidates, &LFSCandidate{
