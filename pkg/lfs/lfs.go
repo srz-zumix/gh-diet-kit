@@ -86,7 +86,8 @@ type LFSCandidate struct {
 // threshold bytes. If ref is empty the repository's default branch is used.
 // The tree is traversed recursively to avoid the GitHub API's 100,000-entry
 // truncation limit; this may require multiple API calls for large repositories.
-func DetectLFSCandidates(ctx context.Context, g *GitHubClient, repo repository.Repository, ref string, threshold uint64) ([]*LFSCandidate, error) {
+// If paths is non-nil and non-empty, only blobs whose path appears in the set are returned.
+func DetectLFSCandidates(ctx context.Context, g *GitHubClient, repo repository.Repository, ref string, threshold uint64, paths map[string]bool) ([]*LFSCandidate, error) {
 	if threshold < MinSizeThreshold {
 		return nil, fmt.Errorf("--threshold must be at least %d bytes (LFS pointer size + 1); got %d", MinSizeThreshold, threshold)
 	}
@@ -126,6 +127,9 @@ func DetectLFSCandidates(ctx context.Context, g *GitHubClient, repo repository.R
 			continue
 		}
 		if uint64(entry.GetSize()) <= threshold {
+			continue
+		}
+		if paths != nil && !paths[entry.GetPath()] {
 			continue
 		}
 		candidates = append(candidates, &LFSCandidate{
