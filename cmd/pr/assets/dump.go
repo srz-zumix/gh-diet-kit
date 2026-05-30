@@ -47,7 +47,7 @@ migrated repository (e.g. after a gh-gei migration) and update the URLs in the
 corresponding PR bodies and comments.
 
 Example:
-  gh pr assets dump -R owner/repo --output-dir ./pr-assets`,
+  gh diet-kit pr assets dump -R owner/repo --output-dir ./pr-assets`,
 		RunE: func(cmd *cobra.Command, args []string) error {
 			ctx := cmd.Context()
 
