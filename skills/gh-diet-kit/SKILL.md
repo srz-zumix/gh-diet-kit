@@ -231,6 +231,69 @@ commands:
         description: Format JSON output using a Go template
       - name: --threshold
         description: Minimum file size to include in the estimate; must be at least 135 bytes (ignored when path arguments are given; default 10MB)
+
+  - name: gh diet-kit pr assets dump
+    description: Download media assets (images and videos) embedded in pull request bodies, issue comments, and review comments to a local directory, and write a metadata.json file recording the source repository, PR numbers, asset locations, and original URLs. Asset files are saved with a hash-prefixed filename to avoid collisions. Use the restore command to re-upload assets after a gh-gei migration.
+    usage: gh diet-kit pr assets dump [flags]
+    flags:
+      - name: --max-prs
+        description: Maximum number of PRs to fetch when --pr is not specified; 0 = unlimited (default 0)
+      - name: --metadata-file
+        description: Path to write the metadata JSON file (default <output-dir>/metadata.json)
+      - name: --no-file-size
+        description: Skip the HEAD request used to record asset file sizes in the metadata (default false)
+      - name: --output-dir
+        description: Directory to download asset files into (default ./pr-assets)
+      - name: --pr
+        description: PR numbers to scan, repeatable (default all PRs)
+      - name: --repo
+        shorthand: -R
+        description: Repository in "[HOST/]OWNER/REPO" format (default current repository)
+      - name: --state
+        description: Filter pull requests by state (all, open, closed; default all)
+
+  - name: gh diet-kit pr assets list
+    description: Scan pull request bodies, issue comments, and review comments for GitHub-hosted media assets (images and videos) and print a summary table. Detected URL patterns include user-images.githubusercontent.com, private-user-images.githubusercontent.com, github.com/user-attachments/assets/..., and github.com/<owner>/<repo>/assets/.... Output fields are PR_NUMBER, LOCATION, LOCATION_ID, TYPE, FILENAME, FILE_SIZE, ASSET_URL. FILE_SIZE is determined by a HEAD request; use --no-file-size to skip. Supports JSON and template output.
+    usage: gh diet-kit pr assets list [flags]
+    flags:
+      - name: --fields
+        description: Comma-separated list of output fields to display (default all default fields)
+      - name: --format
+        description: Output format (json)
+      - name: --jq
+        shorthand: -q
+        description: Filter JSON output using a jq expression
+      - name: --max-prs
+        description: Maximum number of PRs to fetch when --pr is not specified; 0 = unlimited (default 0)
+      - name: --no-file-size
+        description: Skip the HEAD request used to determine asset file sizes (default false)
+      - name: --pr
+        description: PR numbers to scan, repeatable (default all PRs)
+      - name: --repo
+        shorthand: -R
+        description: Repository in "[HOST/]OWNER/REPO" format (default current repository)
+      - name: --state
+        description: Filter pull requests by state (all, open, closed; default all)
+      - name: --template
+        shorthand: -t
+        description: Format JSON output using a Go template
+
+  - name: gh diet-kit pr assets restore
+    description: Read the metadata.json produced by "pr assets dump", re-upload each locally downloaded asset file to the destination repository using POST /repos/{owner}/{repo}/issues/assets, and update PR body and comment text so that old CDN URLs are replaced with the new ones. Use --dry-run to preview changes without modifying anything. Use --src-repo to limit URL replacement to URLs that contain the source repository path.
+    usage: gh diet-kit pr assets restore [flags]
+    flags:
+      - name: --dry-run
+        description: Preview changes without modifying any PR bodies or comments (default false)
+      - name: --input-dir
+        description: Directory containing the downloaded asset files (default ./pr-assets)
+      - name: --metadata-file
+        description: Path to the metadata.json produced by the dump command (default ./pr-assets/metadata.json)
+      - name: --repo
+        shorthand: -R
+        description: Destination repository in "[HOST/]OWNER/REPO" format (default current repository)
+      - name: --src-repo
+        description: Source repository (OWNER/REPO) used to filter which asset URLs should be replaced (default replace all)
+
 ---
 
 # gh-diet-kit

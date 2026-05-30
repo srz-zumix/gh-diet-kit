@@ -31,6 +31,9 @@ go.work.sum
 # temp
 [Tt]emp/
 
+# outputs
+pr-assets/
+
 # go.work paths
 go-gh-extension
 
