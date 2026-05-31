@@ -217,7 +217,7 @@ func FetchPRs(ctx context.Context, g *GitHubClient, repo repository.Repository, 
 		}
 		return prs, nil
 	}
-	listOpts := &github.PullRequestListOptions{State: state}
+	listOpts := &github.PullRequestListOptions{State: state, Sort: "updated", Direction: "desc"}
 	prs, err := g.ListPullRequests(ctx, repo.Owner, repo.Name, listOpts, opts.MaxPRs)
 	if err != nil {
 		return nil, fmt.Errorf("failed to list pull requests: %w", err)
