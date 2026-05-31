@@ -208,6 +208,49 @@ gh diet-kit lfs estimate [path...] [flags]
 | `--template` | `-t` | | Format JSON output using a Go template |
 | `--threshold` | | `10MB` | Minimum file size to include in the estimate; must be at least 135 bytes (ignored when path arguments are given) |
 
+#### pr assets dump
+
+Download media assets (images and videos) embedded in pull request bodies, issue comments, and review comments to a local directory, and write a `metadata.json` file that records the source repository, PR numbers, asset locations, and original URLs.
+
+On subsequent runs, unchanged PRs (by `updated_at` timestamp) are skipped and already-downloaded files are not re-fetched. Use `--overwrite` to force a full re-download regardless.
+
+```sh
+gh diet-kit pr assets dump [flags]
+```
+
+| Flag | Shorthand | Default | Description |
+| ------ | ----------- | ------- | ------------- |
+| `--max-prs` | | `0` | Maximum number of PRs to fetch when `--pr` is not specified (`0` = unlimited) |
+| `--metadata-file` | | `<output-dir>/metadata.json` | Path to write the metadata JSON file |
+| `--no-file-size` | | `false` | Skip the HEAD request used to record asset file sizes in the metadata |
+| `--output-dir` | | `./pr-assets` | Directory to download asset files into |
+| `--overwrite` | | `false` | Re-download all assets and overwrite existing files, skipping repository and timestamp checks |
+| `--pr` | | all PRs | PR numbers to scan (repeatable, e.g. `--pr 1 --pr 2`) |
+| `--repo` | `-R` | current repository | Repository in `[HOST/]OWNER/REPO` format |
+| `--state` | | `all` | Filter pull requests by state: `all`, `open`, `closed` |
+
+#### pr assets list
+
+Scan pull request bodies, issue comments, and review comments for GitHub-hosted media assets (images and videos) and print a summary table. Detected URL patterns include `user-images.githubusercontent.com`, `private-user-images.githubusercontent.com`, `github.com/user-attachments/assets/...`, and `github.com/<owner>/<repo>/assets/...`.
+
+Output fields: `PR_NUMBER`, `LOCATION`, `LOCATION_ID`, `TYPE`, `FILENAME`, `FILE_SIZE`, `ASSET_URL`.
+
+```sh
+gh diet-kit pr assets list [flags]
+```
+
+| Flag | Shorthand | Default | Description |
+| ------ | ----------- | ------- | ------------- |
+| `--fields` | | all default fields | Comma-separated list of output fields to display |
+| `--format` | | table | Output format: `json` |
+| `--jq` | `-q` | | Filter JSON output using a jq expression |
+| `--max-prs` | | `0` | Maximum number of PRs to fetch when `--pr` is not specified (`0` = unlimited) |
+| `--no-file-size` | | `false` | Skip the HEAD request used to determine asset file sizes |
+| `--pr` | | all PRs | PR numbers to scan (repeatable, e.g. `--pr 1 --pr 2`) |
+| `--repo` | `-R` | current repository | Repository in `[HOST/]OWNER/REPO` format |
+| `--state` | | `all` | Filter pull requests by state: `all`, `open`, `closed` |
+| `--template` | `-t` | | Format JSON output using a Go template |
+
 #### tree detect
 
 Analyse the git tree structure of a repository and report directories whose direct entry count meets or exceeds a threshold.
