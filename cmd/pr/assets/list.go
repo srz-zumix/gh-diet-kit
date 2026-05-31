@@ -9,6 +9,7 @@ import (
 	"github.com/dustin/go-humanize"
 	"github.com/spf13/cobra"
 	"github.com/srz-zumix/gh-diet-kit/pkg/pr/assets"
+	"github.com/srz-zumix/go-gh-extension/pkg/gh"
 	"github.com/srz-zumix/go-gh-extension/pkg/logger"
 	"github.com/srz-zumix/go-gh-extension/pkg/parser"
 )
@@ -89,7 +90,7 @@ Output fields: PR_NUMBER, LOCATION, LOCATION_ID, TYPE, FILENAME, FILE_SIZE, ASSE
 
 	f := cmd.Flags()
 	f.StringVarP(&repoFlag, "repo", "R", "", "Repository in \"[HOST/]OWNER/REPO\" format (default: current repository)")
-	cmdutil.StringEnumFlag(cmd, &stateFlag, "state", "", "all", []string{"all", "open", "closed"}, "Filter pull requests by state")
+	cmdutil.StringEnumFlag(cmd, &stateFlag, "state", "", gh.PRStateAll, gh.PRStateValues, "Filter pull requests by state")
 	f.IntSliceVar(&prFlag, "pr", nil, "PR numbers to scan (repeatable; default: all PRs)")
 	f.IntVar(&maxPRsFlag, "max-prs", 0, "Maximum number of PRs to fetch when --pr is not specified (0 = unlimited)")
 	f.StringSliceVar(&fieldsFlag, "fields", nil, "Comma-separated list of output fields (default: PR_NUMBER,LOCATION,LOCATION_ID,TYPE,FILENAME,FILE_SIZE,ASSET_URL)")

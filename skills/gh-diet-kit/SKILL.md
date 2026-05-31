@@ -233,7 +233,7 @@ commands:
         description: Minimum file size to include in the estimate; must be at least 135 bytes (ignored when path arguments are given; default 10MB)
 
   - name: gh diet-kit pr assets dump
-    description: Download media assets (images and videos) embedded in pull request bodies, issue comments, and review comments to a local directory, and write a metadata.json file recording the source repository, PR numbers, asset locations, and original URLs. Asset files are saved with a hash-prefixed filename to avoid collisions. Use the restore command to re-upload assets after a gh-gei migration.
+    description: Download media assets (images and videos) embedded in pull request bodies, issue comments, and review comments to a local directory, and write a metadata.json file recording the source repository, PR numbers, asset locations, and original URLs. Asset files are saved with a hash-prefixed filename to avoid collisions. On subsequent runs, unchanged PRs are skipped and already-downloaded files are not re-fetched unless --overwrite is specified.
     usage: gh diet-kit pr assets dump [flags]
     flags:
       - name: --max-prs
@@ -244,6 +244,8 @@ commands:
         description: Skip the HEAD request used to record asset file sizes in the metadata (default false)
       - name: --output-dir
         description: Directory to download asset files into (default ./pr-assets)
+      - name: --overwrite
+        description: Re-download all assets and overwrite existing files, skipping repository and timestamp checks (default false)
       - name: --pr
         description: PR numbers to scan, repeatable (default all PRs)
       - name: --repo
@@ -277,22 +279,6 @@ commands:
       - name: --template
         shorthand: -t
         description: Format JSON output using a Go template
-
-  - name: gh diet-kit pr assets restore
-    description: Read the metadata.json produced by "pr assets dump", re-upload each locally downloaded asset file to the destination repository using POST /repos/{owner}/{repo}/issues/assets, and update PR body and comment text so that old CDN URLs are replaced with the new ones. Use --dry-run to preview changes without modifying anything. Use --src-repo to limit URL replacement to URLs that contain the source repository path.
-    usage: gh diet-kit pr assets restore [flags]
-    flags:
-      - name: --dry-run
-        description: Preview changes without modifying any PR bodies or comments (default false)
-      - name: --input-dir
-        description: Directory containing the downloaded asset files (default ./pr-assets)
-      - name: --metadata-file
-        description: Path to the metadata.json produced by the dump command (default ./pr-assets/metadata.json)
-      - name: --repo
-        shorthand: -R
-        description: Destination repository in "[HOST/]OWNER/REPO" format (default current repository)
-      - name: --src-repo
-        description: Source repository (OWNER/REPO) used to filter which asset URLs should be replaced (default replace all)
 
 ---
 

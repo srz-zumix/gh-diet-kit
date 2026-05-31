@@ -6,6 +6,7 @@ import (
 	"path/filepath"
 	"time"
 
+	"github.com/cli/cli/v2/pkg/cmdutil"
 	"github.com/cli/go-gh/v2/pkg/api"
 	"github.com/dustin/go-humanize"
 	"github.com/spf13/cobra"
@@ -268,7 +269,7 @@ Example:
 
 	f := cmd.Flags()
 	f.StringVarP(&repoFlag, "repo", "R", "", "Repository in \"[HOST/]OWNER/REPO\" format (default: current repository)")
-	f.StringVar(&stateFlag, "state", "all", "Filter pull requests by state: all, open, closed")
+	cmdutil.StringEnumFlag(cmd, &stateFlag, "state", "", gh.PRStateAll, gh.PRStateValues, "Filter pull requests by state")
 	f.IntSliceVar(&prFlag, "pr", nil, "PR numbers to scan (repeatable; default: all PRs)")
 	f.IntVar(&maxPRsFlag, "max-prs", 0, "Maximum number of PRs to fetch when --pr is not specified (0 = unlimited)")
 	f.StringVar(&outputDirFlag, "output-dir", "./pr-assets", "Directory to download asset files into")

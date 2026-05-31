@@ -210,7 +210,9 @@ gh diet-kit lfs estimate [path...] [flags]
 
 #### pr assets dump
 
-Download media assets (images and videos) embedded in pull request bodies, issue comments, and review comments to a local directory, and write a `metadata.json` file that records the source repository, PR numbers, asset locations, and original URLs. The dump output can be used by `pr assets restore` to re-upload assets after a repository migration (e.g. with gh-gei) and rewrite the PR/comment bodies with the new URLs.
+Download media assets (images and videos) embedded in pull request bodies, issue comments, and review comments to a local directory, and write a `metadata.json` file that records the source repository, PR numbers, asset locations, and original URLs.
+
+On subsequent runs, unchanged PRs (by `updated_at` timestamp) are skipped and already-downloaded files are not re-fetched. Use `--overwrite` to force a full re-download regardless.
 
 ```sh
 gh diet-kit pr assets dump [flags]
@@ -218,11 +220,11 @@ gh diet-kit pr assets dump [flags]
 
 | Flag | Shorthand | Default | Description |
 | ------ | ----------- | ------- | ------------- |
-| `--input-dir` | | `./pr-assets` | Directory containing downloaded asset files (used by restore) |
 | `--max-prs` | | `0` | Maximum number of PRs to fetch when `--pr` is not specified (`0` = unlimited) |
 | `--metadata-file` | | `<output-dir>/metadata.json` | Path to write the metadata JSON file |
 | `--no-file-size` | | `false` | Skip the HEAD request used to record asset file sizes in the metadata |
 | `--output-dir` | | `./pr-assets` | Directory to download asset files into |
+| `--overwrite` | | `false` | Re-download all assets and overwrite existing files, skipping repository and timestamp checks |
 | `--pr` | | all PRs | PR numbers to scan (repeatable, e.g. `--pr 1 --pr 2`) |
 | `--repo` | `-R` | current repository | Repository in `[HOST/]OWNER/REPO` format |
 | `--state` | | `all` | Filter pull requests by state: `all`, `open`, `closed` |
@@ -248,24 +250,6 @@ gh diet-kit pr assets list [flags]
 | `--repo` | `-R` | current repository | Repository in `[HOST/]OWNER/REPO` format |
 | `--state` | | `all` | Filter pull requests by state: `all`, `open`, `closed` |
 | `--template` | `-t` | | Format JSON output using a Go template |
-
-#### pr assets restore
-
-Read the `metadata.json` produced by `pr assets dump`, re-upload each locally downloaded asset file to the destination repository using `POST /repos/{owner}/{repo}/issues/assets`, and update PR body and comment text so that old CDN URLs are replaced with the new ones.
-
-Use `--dry-run` to preview which URLs would be replaced without making any changes.
-
-```sh
-gh diet-kit pr assets restore [flags]
-```
-
-| Flag | Shorthand | Default | Description |
-| ------ | ----------- | ------- | ------------- |
-| `--dry-run` | | `false` | Preview changes without modifying any PR bodies or comments |
-| `--input-dir` | | `./pr-assets` | Directory containing the downloaded asset files |
-| `--metadata-file` | | `./pr-assets/metadata.json` | Path to the metadata.json produced by the dump command |
-| `--repo` | `-R` | current repository | Destination repository in `[HOST/]OWNER/REPO` format |
-| `--src-repo` | | replace all | Source repository (`OWNER/REPO`) used to filter which asset URLs should be replaced |
 
 #### tree detect
 
