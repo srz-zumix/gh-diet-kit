@@ -187,7 +187,7 @@ Example:
 						if _, statErr := os.Stat(destPath); statErr == nil {
 							logger.Info("skipping existing asset", "file", destPath)
 							a.LocalFile = safeFile
-							if existing.FileSize != 0 {
+							if existing.FileSize >= 0 {
 								a.FileSize = existing.FileSize
 							}
 							if existing.Filename != "" {
