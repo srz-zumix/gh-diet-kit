@@ -20,7 +20,7 @@ import (
 
 // NewDumpCmd returns the cobra.Command for the pr assets dump subcommand.
 // It detects media assets in pull requests, downloads them to a local directory,
-// and writes a metadata.json file that can be used by the restore command.
+// and writes a metadata.json file for later reference.
 func NewDumpCmd() *cobra.Command {
 	var repoFlag string
 	var stateFlag string
@@ -33,7 +33,7 @@ func NewDumpCmd() *cobra.Command {
 
 	cmd := &cobra.Command{
 		Use:   "dump",
-		Short: "Download PR media assets and write a metadata file for later restoration",
+		Short: "Download PR media assets and write a metadata file",
 		Long: `Detect media assets embedded in pull request bodies, issue comments, and
 review comments, download each asset file to a local directory, and write a
 metadata.json file recording the source repository, PR numbers, locations, and
@@ -42,10 +42,6 @@ original URLs.
 On subsequent runs against the same output directory, unchanged PRs (by
 updated_at timestamp) are skipped and already-downloaded files are not
 re-fetched. Use --overwrite to force a full re-download regardless.
-
-The dump output can be used by the restore command to re-upload assets to a
-migrated repository (e.g. after a gh-gei migration) and update the URLs in the
-corresponding PR bodies and comments.
 
 Example:
   gh diet-kit pr assets dump -R owner/repo --output-dir ./pr-assets`,
