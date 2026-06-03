@@ -16,5 +16,6 @@ issue comments, and review comments.`,
 	}
 	cmd.AddCommand(assets.NewListCmd())
 	cmd.AddCommand(assets.NewDumpCmd())
+	cmd.AddCommand(assets.NewRestoreCmd())
 	return cmd
 }
