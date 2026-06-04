@@ -62,10 +62,17 @@ func NewPlaywrightUploader(stateFile, host string, forceHeaded bool) (*Playwrigh
 	}
 
 	_, stateErr := os.Stat(stateFile)
-	headless := stateErr == nil && !forceHeaded
+	if stateErr != nil && !os.IsNotExist(stateErr) {
+		pw.Stop() //nolint:errcheck
+		return nil, fmt.Errorf("check browser session file %q: %w", stateFile, stateErr)
+	}
+	sessionExists := stateErr == nil
+	headless := sessionExists && !forceHeaded
 
-	if !headless {
+	if !sessionExists {
 		fmt.Fprintln(os.Stderr, "No saved browser session found. A browser window will open for interactive GitHub login.")
+	} else if forceHeaded {
+		fmt.Fprintln(os.Stderr, "Using saved browser session in headed mode.")
 	}
 
 	browser, err := pw.Chromium.Launch(playwright.BrowserTypeLaunchOptions{
@@ -83,7 +90,7 @@ func NewPlaywrightUploader(stateFile, host string, forceHeaded bool) (*Playwrigh
 	ctxOpts := playwright.BrowserNewContextOptions{
 		UserAgent: playwright.String(userAgent),
 	}
-	if stateErr == nil {
+	if sessionExists {
 		ctxOpts.StorageStatePath = playwright.String(stateFile)
 	}
 
@@ -168,8 +175,9 @@ func (u *PlaywrightUploader) isLoggedIn() (bool, error) {
 //
 // If not authenticated, a headed browser is opened so the user can log in
 // interactively (up to 5 minutes). The session is saved to stateFile for
-// headless reuse on subsequent runs.
-func (u *PlaywrightUploader) Init(stateFile, owner, repo, repoID string) error {
+// headless reuse on subsequent runs. Pass headed=true to allow re-login even
+// when a (possibly expired) session file already exists.
+func (u *PlaywrightUploader) Init(stateFile, owner, repo, repoID string, headed bool) error {
 	// issues/new?template= forces the blank-issue editor directly, bypassing
 	// any issue template chooser. The page is authenticated and non-CDN-cached,
 	// so it always carries the CSRF meta tag and the markdown editor with the
@@ -191,8 +199,14 @@ func (u *PlaywrightUploader) Init(stateFile, owner, repo, repoID string) error {
 
 	if !loggedIn {
 		// Not authenticated – start interactive login flow.
-		if _, stateErr := os.Stat(stateFile); stateErr == nil {
-			return fmt.Errorf("browser session expired; delete %q and re-run to log in interactively", stateFile)
+		// If a session file exists but the user did not request headed mode, the
+		// session has expired and cannot be renewed headlessly; tell the user how
+		// to recover. When headed=true, fall through to the interactive login flow
+		// regardless of whether a session file is present.
+		if !headed {
+			if _, stateErr := os.Stat(stateFile); stateErr == nil {
+				return fmt.Errorf("browser session expired; re-run with --headed to log in interactively")
+			}
 		}
 
 		// Navigate to the login page with return_to pointing at issues/new so
@@ -224,6 +238,11 @@ func (u *PlaywrightUploader) Init(stateFile, owner, repo, repoID string) error {
 		}
 		if _, err := u.bctx.StorageState(stateFile); err != nil {
 			return fmt.Errorf("save browser session to %q: %w", stateFile, err)
+		}
+		// Lock down the state file: it contains auth cookies/tokens that must
+		// not be readable by other users on the system.
+		if err := os.Chmod(stateFile, 0o600); err != nil {
+			return fmt.Errorf("secure browser session file %q: %w", stateFile, err)
 		}
 		fmt.Fprintln(os.Stderr, "Browser session saved. Subsequent runs will use headless mode.")
 
@@ -411,7 +430,7 @@ func Restore(ctx context.Context, g *GitHubClient, repo repository.Repository, i
 		}
 		defer uploader.Close()
 
-		if err := uploader.Init(opts.StateFile, owner, repoName, repoID); err != nil {
+		if err := uploader.Init(opts.StateFile, owner, repoName, repoID, opts.Headed); err != nil {
 			return fmt.Errorf("initialize browser session: %w", err)
 		}
 	}

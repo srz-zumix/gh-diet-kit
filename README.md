@@ -264,11 +264,12 @@ gh diet-kit pr assets restore [flags]
 | Flag | Shorthand | Default | Description |
 | ------ | ----------- | ------- | ------------- |
 | `--browser-state` | | `<user-config-dir>/gh-diet-kit/playwright-state.json` | Path to the Playwright browser state file for session persistence |
-| `--dryrun`, `-n` | | `false` | Preview uploads and URL replacements without making any changes |
+| `--dryrun` | `-n` | `false` | Preview uploads and URL replacements without making any changes |
+| `--headed` | | `false` | Run browser in headed (visible) mode even when a saved session exists |
 | `--input-dir` | | `./pr-assets` | Directory containing the downloaded asset files |
 | `--metadata-file` | | `<input-dir>/metadata.json` | Path to the metadata JSON file |
+| `--pr` | | (all PRs) | PR numbers to restore (repeatable) |
 | `--repo` | `-R` | current repository | Destination repository in `[HOST/]OWNER/REPO` format |
-| `--src-repo` | | (replace all) | Filter: only replace asset URLs containing this string |
 
 #### tree detect
 
