@@ -455,6 +455,9 @@ func Restore(ctx context.Context, g *GitHubClient, repo repository.Repository, i
 	}
 
 	if opts.DryRun {
+		for oldURL, newURL := range urlReplacements {
+			logger.Info("dry-run: would replace URL", "old", oldURL, "new", newURL)
+		}
 		return nil
 	}
 
