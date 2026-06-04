@@ -297,6 +297,16 @@ func (u *PlaywrightUploader) Init(stateFile, owner, repo, repoID string, headed 
 // component handles the drop event, posting to /upload/policies/assets and
 // then uploading to S3 — all with proper CSRF/session handling because the
 // request originates from inside the browser page context.
+//
+// The full upload pipeline consists of three browser-initiated requests:
+//  1. POST /upload/policies/assets → GitHub issues a presigned S3 URL
+//  2. PUT  <s3-upload-url>         → browser uploads the file to S3
+//  3. POST /upload/assets/{id}     → GitHub confirms the S3 upload succeeded
+//
+// Upload waits for step 3 before returning so that the caller can be confident
+// the CDN URL is actually reachable. The outer ExpectResponse listener for the
+// confirmation endpoint is registered before the inner one for the policy
+// endpoint, ensuring no race with either request.
 func (u *PlaywrightUploader) Upload(localPath, filename string) (string, error) {
 	data, err := os.ReadFile(localPath)
 	if err != nil {
@@ -311,55 +321,76 @@ func (u *PlaywrightUploader) Upload(localPath, filename string) (string, error) 
 	// Base64-encode the file so it can be passed through page.Evaluate().
 	b64 := base64.StdEncoding.EncodeToString(data)
 
-	// ExpectResponse registers the listener BEFORE the callback runs, so no
-	// race can occur between the upload trigger and the response capture.
-	// The first argument must be func(string) bool (URL predicate), not
-	// func(playwright.Response) bool — playwright-go's newURLMatcher only
-	// accepts string, *regexp.Regexp, or func(string) bool.
-	resp, err := u.page.ExpectResponse(
-		func(u string) bool {
-			return strings.Contains(u, "/upload/policies/assets")
+	// policyBody is populated by the inner ExpectResponse callback and read
+	// by the outer one after the confirmation response arrives.
+	var policyBody []byte
+
+	// Outer listener: wait for the GitHub asset-confirmation request
+	// (POST /upload/assets/{id}). This is distinct from /upload/policies/assets:
+	// the pattern "/upload/assets/" does not match "/upload/policies/assets".
+	confirmResp, err := u.page.ExpectResponse(
+		func(rawURL string) bool {
+			return strings.Contains(rawURL, "/upload/assets/")
 		},
 		func() error {
-			// Dispatch a drag-drop event with the file data onto the markdown
-			// editor. The React MarkdownEditor component listens for native drop
-			// events, reads dataTransfer.files, and triggers the upload flow.
-			_, evalErr := u.page.Evaluate(`
-				([b64, fname, ctype]) => {
-					const binary = atob(b64);
-					const bytes = new Uint8Array(binary.length);
-					for (let i = 0; i < binary.length; i++) bytes[i] = binary.charCodeAt(i);
-					const file = new File([bytes], fname, {type: ctype});
-					const dt = new DataTransfer();
-					dt.items.add(file);
-					// Target the React textarea; fall back to file-attachment or any textarea.
-					const el = document.querySelector('.prc-Textarea-TextArea-snlco') ||
-						document.querySelector('file-attachment') ||
-						document.querySelector('textarea');
-					if (!el) return;
-					el.dispatchEvent(new DragEvent('dragenter', {dataTransfer: dt, bubbles: true}));
-					el.dispatchEvent(new DragEvent('dragover',  {dataTransfer: dt, bubbles: true, cancelable: true}));
-					el.dispatchEvent(new DragEvent('drop',      {dataTransfer: dt, bubbles: true, cancelable: true}));
-				}
-			`, []interface{}{b64, filename, contentType})
-			return evalErr
+			// Inner listener: wait for the upload-policy response while
+			// simultaneously triggering the drag-drop that starts the flow.
+			policyResp, policyErr := u.page.ExpectResponse(
+				func(rawURL string) bool {
+					return strings.Contains(rawURL, "/upload/policies/assets")
+				},
+				func() error {
+					// Dispatch a drag-drop event with the file data onto the markdown
+					// editor. The React MarkdownEditor component listens for native drop
+					// events, reads dataTransfer.files, and triggers the upload flow.
+					_, evalErr := u.page.Evaluate(`
+						([b64, fname, ctype]) => {
+							const binary = atob(b64);
+							const bytes = new Uint8Array(binary.length);
+							for (let i = 0; i < binary.length; i++) bytes[i] = binary.charCodeAt(i);
+							const file = new File([bytes], fname, {type: ctype});
+							const dt = new DataTransfer();
+							dt.items.add(file);
+							// Target the React textarea; fall back to file-attachment or any textarea.
+							const el = document.querySelector('.prc-Textarea-TextArea-snlco') ||
+								document.querySelector('file-attachment') ||
+								document.querySelector('textarea');
+							if (!el) return;
+							el.dispatchEvent(new DragEvent('dragenter', {dataTransfer: dt, bubbles: true}));
+							el.dispatchEvent(new DragEvent('dragover',  {dataTransfer: dt, bubbles: true, cancelable: true}));
+							el.dispatchEvent(new DragEvent('drop',      {dataTransfer: dt, bubbles: true, cancelable: true}));
+						}
+					`, []interface{}{b64, filename, contentType})
+					return evalErr
+				},
+				playwright.PageExpectResponseOptions{Timeout: playwright.Float(30000)},
+			)
+			if policyErr != nil {
+				return fmt.Errorf("wait for upload policy: %w", policyErr)
+			}
+			var bodyErr error
+			policyBody, bodyErr = policyResp.Body()
+			if bodyErr != nil {
+				return fmt.Errorf("read upload policy body for %q: %w", filename, bodyErr)
+			}
+			if policyResp.Status() != 200 && policyResp.Status() != 201 {
+				return fmt.Errorf("upload policy returned %d for %q: %s", policyResp.Status(), filename, string(policyBody))
+			}
+			return nil
 		},
-		playwright.PageExpectResponseOptions{Timeout: playwright.Float(30000)},
+		// The confirmation POST happens after the S3 upload, so allow more time.
+		playwright.PageExpectResponseOptions{Timeout: playwright.Float(60000)},
 	)
 	if err != nil {
 		return "", fmt.Errorf("upload %q: %w", filename, err)
 	}
-
-	body, err := resp.Body()
-	if err != nil {
-		return "", fmt.Errorf("read upload policy body for %q: %w", filename, err)
-	}
-	if resp.Status() != 200 && resp.Status() != 201 {
-		return "", fmt.Errorf("upload policy returned %d for %q: %s", resp.Status(), filename, string(body))
+	if confirmResp.Status() != 200 && confirmResp.Status() != 201 {
+		confirmBody, _ := confirmResp.Body()
+		return "", fmt.Errorf("asset upload confirmation returned %d for %q: %s", confirmResp.Status(), filename, string(confirmBody))
 	}
 
 	var policy uploadPolicy
-	if err := json.Unmarshal(body, &policy); err != nil {
+	if err := json.Unmarshal(policyBody, &policy); err != nil {
 		return "", fmt.Errorf("parse upload policy for %q: %w", filename, err)
 	}
 	if policy.Asset.Href == "" {
@@ -458,8 +489,17 @@ func Restore(ctx context.Context, g *GitHubClient, repo repository.Repository, i
 		}
 
 		if opts.DryRun {
-			urlReplacements[a.AssetURL] = fmt.Sprintf("(dry-run:%s)", a.Filename)
-			logger.Info("dry-run: would upload", "file", localPath, "filename", a.Filename)
+			if _, alreadyDone := urlReplacements[a.AssetURL]; !alreadyDone {
+				urlReplacements[a.AssetURL] = fmt.Sprintf("(dry-run:%s)", a.Filename)
+				logger.Info("dry-run: would upload", "file", localPath, "filename", a.Filename)
+			}
+			continue
+		}
+
+		// Skip re-uploading an asset whose source URL has already been processed.
+		// The same AssetURL can appear across multiple PR locations (e.g. a reused
+		// image), but we only need to upload it once.
+		if _, alreadyDone := urlReplacements[a.AssetURL]; alreadyDone {
 			continue
 		}
 

@@ -286,17 +286,20 @@ commands:
     flags:
       - name: --browser-state
         description: Path to the Playwright browser state file for session persistence (default <user-config-dir>/gh-diet-kit/playwright-state.json)
-      - name: --dryrun, -n
+      - name: --dryrun
+        shorthand: -n
         description: Preview uploads and URL replacements without making any changes (default false)
+      - name: --headed
+        description: Run browser in headed (visible) mode even when a saved session exists (default false)
       - name: --input-dir
         description: Directory containing the downloaded asset files (default ./pr-assets)
       - name: --metadata-file
         description: Path to the metadata JSON file (default <input-dir>/metadata.json)
+      - name: --pr
+        description: PR numbers to restore, repeatable (default all PRs)
       - name: --repo
         shorthand: -R
         description: Destination repository in "[HOST/]OWNER/REPO" format (default current repository)
-      - name: --src-repo
-        description: Filter; only replace asset URLs containing this string (default replace all)
 
 ---
 
