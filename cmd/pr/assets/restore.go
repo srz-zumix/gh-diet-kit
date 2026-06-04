@@ -79,7 +79,7 @@ Example:
 		},
 	}
 
-	cmd.Flags().StringVarP(&repoFlag, "repo", "R", "", "Destination repository (OWNER/REPO)")
+	cmd.Flags().StringVarP(&repoFlag, "repo", "R", "", "Repository in \"[HOST/]OWNER/REPO\" format (default: current repository)")
 	cmd.Flags().StringVar(&inputDirFlag, "input-dir", "./pr-assets", "Directory containing the downloaded asset files")
 	cmd.Flags().StringVar(&metadataFileFlag, "metadata-file", "", "Path to metadata.json (default: <input-dir>/metadata.json)")
 	cmd.Flags().IntSliceVar(&prFlag, "pr", nil, "PR numbers to restore (repeatable; default: all PRs)")
