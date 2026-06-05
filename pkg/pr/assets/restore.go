@@ -158,8 +158,7 @@ func (u *PlaywrightUploader) isLoggedIn() (bool, error) {
 func (u *PlaywrightUploader) Init(ctx context.Context, stateFile, owner, repo string, headed bool) error {
 	// issues/new?template= forces the blank-issue editor directly, bypassing
 	// any issue template chooser. The page is authenticated and non-CDN-cached,
-	// so it always carries the CSRF meta tag and the markdown editor with the
-	// hidden file-attachment component.
+	// so it always carries a user-login meta tag for authenticated users.
 	issuesNewURL := fmt.Sprintf("%s://%s/%s/%s/issues/new?template=", u.scheme, u.host, owner, repo)
 
 	if _, err := u.page.Goto(issuesNewURL, playwright.PageGotoOptions{
@@ -253,8 +252,7 @@ func (u *PlaywrightUploader) Init(ctx context.Context, stateFile, owner, repo st
 //  1. Playwright drag-drop event → browser sends POST /upload/policies/assets
 //     with proper session cookies and CSRF. ExpectResponse captures the response.
 //  2. Go net/http POST to S3 presigned URL (no auth required).
-//  3. Go net/http PUT /upload/assets/{id} using the upload-specific
-//     asset_upload_authenticity_token returned in the policy (not the page CSRF).
+//  3. Browser fetch() PUT to /upload/assets/{id} to confirm the upload.
 func (u *PlaywrightUploader) Upload(localPath, filename string) (string, error) {
 	data, err := os.ReadFile(localPath)
 	if err != nil {
