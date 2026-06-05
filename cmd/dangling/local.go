@@ -24,6 +24,7 @@ func NewLocalCmd() *cobra.Command {
 	cmd := &cobra.Command{
 		Use:   "local",
 		Short: "List locally dangling commits that exist on the remote",
+		Args:  cobra.NoArgs,
 		Long: `List commits that are not reachable from any local branch or tag ref
 but exist on the remote GitHub repository.
 

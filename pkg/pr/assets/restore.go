@@ -482,13 +482,16 @@ func Restore(ctx context.Context, g *GitHubClient, repo repository.Repository, i
 			logger.Warn("asset has no local file, skipping", "url", a.AssetURL)
 			continue
 		}
-		// Reject absolute paths and directory traversal sequences to prevent
-		// metadata.json from being used to read files outside inputDir.
-		if filepath.IsAbs(a.LocalFile) || strings.Contains(a.LocalFile, "..") {
+		// Normalize the path, then reject absolute paths and any path that
+		// starts with ".." (upward traversal). This is more precise than a
+		// raw strings.Contains check, which would wrongly reject legitimate
+		// filenames such as "foo..bar" or "..foo".
+		cleanedFile := filepath.Clean(a.LocalFile)
+		if filepath.IsAbs(cleanedFile) || cleanedFile == ".." || strings.HasPrefix(cleanedFile, ".."+string(filepath.Separator)) {
 			logger.Warn("asset local file path is not allowed, skipping", "file", a.LocalFile)
 			continue
 		}
-		localPath := filepath.Join(inputDir, a.LocalFile)
+		localPath := filepath.Join(inputDir, cleanedFile)
 		if _, statErr := os.Stat(localPath); statErr != nil {
 			logger.Warn("local file not found, skipping", "file", localPath)
 			continue

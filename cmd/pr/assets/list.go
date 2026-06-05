@@ -29,6 +29,7 @@ func NewListCmd() *cobra.Command {
 	cmd := &cobra.Command{
 		Use:   "list",
 		Short: "List media assets embedded in pull request bodies and comments",
+		Args:  cobra.NoArgs,
 		Long: `Scan pull request bodies, issue comments, and review comments for
 GitHub-hosted media assets (images and videos) and print a summary table.
 

@@ -28,6 +28,7 @@ func NewEstimateCmd() *cobra.Command {
 	cmd := &cobra.Command{
 		Use:   "estimate [path...]",
 		Short: "Estimate git storage savings from migrating large files to Git LFS",
+		Args:  cobra.ArbitraryArgs,
 		Long: `Estimate how much git object storage would be freed by migrating large
 files to Git LFS.
 

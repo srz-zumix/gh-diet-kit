@@ -29,6 +29,7 @@ func NewBranchesCmd() *cobra.Command {
 	cmd := &cobra.Command{
 		Use:   "branches",
 		Short: "List unprotected branches with no associated pull request and their unique blob sizes",
+		Args:  cobra.NoArgs,
 		Long: `List unprotected branches that have no associated pull request (open, closed,
 or merged), and calculate the total size of blobs introduced by commits unique
 to each branch.

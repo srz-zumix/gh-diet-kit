@@ -28,6 +28,7 @@ func NewRestoreCmd() *cobra.Command {
 	cmd := &cobra.Command{
 		Use:   "restore",
 		Short: "Re-upload PR assets and update URLs in the destination repository",
+		Args:  cobra.NoArgs,
 		Long: `Read the metadata.json produced by "pr assets dump", upload each local asset
 file to the destination repository using Playwright browser automation, and
 replace the old source asset URLs with the new destination CDN URLs in PR

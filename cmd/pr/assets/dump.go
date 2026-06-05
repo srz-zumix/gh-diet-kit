@@ -34,6 +34,7 @@ func NewDumpCmd() *cobra.Command {
 	cmd := &cobra.Command{
 		Use:   "dump",
 		Short: "Download PR media assets and write a metadata file",
+		Args:  cobra.NoArgs,
 		Long: `Detect media assets embedded in pull request bodies, issue comments, and
 review comments, download each asset file to a local directory, and write a
 metadata.json file recording the source repository, PR numbers, locations, and

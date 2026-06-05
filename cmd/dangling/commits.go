@@ -40,6 +40,7 @@ func NewCommitsCmd() *cobra.Command {
 	cmd := &cobra.Command{
 		Use:   "commits",
 		Short: "List commits not reachable from any branch or tag ref",
+		Args:  cobra.NoArgs,
 		Long: `List commits that originate from squash or rebase merged pull requests,
 commits dropped by force-pushes on PR head branches, or commits from closed
 unmerged pull requests, that are not reachable from any normal branch or tag
