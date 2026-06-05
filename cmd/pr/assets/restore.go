@@ -97,7 +97,7 @@ Example:
 	cmd.Flags().StringVar(&metadataFileFlag, "metadata-file", "", "Path to metadata.json (default: <input-dir>/metadata.json)")
 	cmd.Flags().IntSliceVar(&prFlag, "pr", nil, "PR numbers to restore (repeatable; default: all PRs)")
 	cmd.Flags().BoolVarP(&dryRunFlag, "dryrun", "n", false, "Preview uploads and replacements without making any changes")
-	cmd.Flags().StringVar(&browserStateFlag, "browser-state", "", "Path to the Playwright browser state file for session persistence (default: user config dir)")
+	cmd.Flags().StringVar(&browserStateFlag, "browser-state", "", "Path to the Playwright browser state file for session persistence (default: <user-config-dir>/gh-diet-kit/playwright-state.json)")
 	cmd.Flags().BoolVar(&headedFlag, "headed", false, "Run browser in headed (visible) mode even when a saved session exists (useful for debugging)")
 	cmd.Flags().BoolVar(&clearCacheFlag, "clear-cache", false, "Delete the saved browser session after the restore completes")
 	cmd.Flags().BoolVar(&clearCacheOnlyFlag, "clear-cache-only", false, "Delete the saved browser session and exit without restoring")
