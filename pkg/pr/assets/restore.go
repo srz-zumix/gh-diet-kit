@@ -13,7 +13,6 @@ import (
 	"net/url"
 	"os"
 	"path/filepath"
-	"strconv"
 	"strings"
 	"time"
 
@@ -44,9 +43,6 @@ type PlaywrightUploader struct {
 	page    playwright.Page
 	host    string
 	scheme  string
-	csrf    string
-	repoID  string
-	repoURL string
 }
 
 // NewPlaywrightUploader creates a new PlaywrightUploader and launches a browser.
@@ -123,25 +119,6 @@ func NewPlaywrightUploader(stateFile, host string, forceHeaded bool) (*Playwrigh
 	}, nil
 }
 
-// extractCSRF reads the CSRF token from the current page.
-// Checks meta[name="csrf-token"] first, then input[name="authenticity_token"]
-// as a fallback for pages that embed the token in a form field.
-func (u *PlaywrightUploader) extractCSRF() (string, error) {
-	v, err := u.page.Evaluate(
-		`document.querySelector('meta[name="csrf-token"]')?.getAttribute('content') ||` +
-			`document.querySelector('input[name="authenticity_token"]')?.value ||` +
-			`null`,
-	)
-	if err != nil {
-		return "", fmt.Errorf("evaluate CSRF token: %w", err)
-	}
-	if v == nil {
-		return "", nil
-	}
-	s, _ := v.(string)
-	return s, nil
-}
-
 // extractMeta reads the content attribute of the first meta tag with the given name.
 // Returns an empty string if the tag is absent.
 func (u *PlaywrightUploader) extractMeta(name string) (string, error) {
@@ -169,25 +146,21 @@ func (u *PlaywrightUploader) isLoggedIn() (bool, error) {
 	return login != "", nil
 }
 
-// Init navigates to the repository's new-issue form and acquires the CSRF token
-// required for subsequent uploads. The repository ID is provided by the caller
-// (obtained via the GitHub API) so we do not need to scrape it from the page.
-//
-// The issues/new page is used because it:
-//   - requires authentication (GitHub redirects to /login if not signed in)
-//   - is never served from a CDN cache, so it always includes the CSRF meta tag
-//
+// Init navigates to the repository's new-issue form to verify authentication.
 // If not authenticated, a headed browser is opened so the user can log in
 // interactively (up to 5 minutes). The session is saved to stateFile for
 // headless reuse on subsequent runs. Pass headed=true to allow re-login even
 // when a (possibly expired) session file already exists.
-func (u *PlaywrightUploader) Init(stateFile, owner, repo, repoID string, headed bool) error {
+//
+// The issues/new page is used because it:
+//   - requires authentication (GitHub redirects to /login if not signed in)
+//   - is never served from a CDN cache
+func (u *PlaywrightUploader) Init(ctx context.Context, stateFile, owner, repo string, headed bool) error {
 	// issues/new?template= forces the blank-issue editor directly, bypassing
 	// any issue template chooser. The page is authenticated and non-CDN-cached,
 	// so it always carries the CSRF meta tag and the markdown editor with the
 	// hidden file-attachment component.
 	issuesNewURL := fmt.Sprintf("%s://%s/%s/%s/issues/new?template=", u.scheme, u.host, owner, repo)
-	repoURL := fmt.Sprintf("%s://%s/%s/%s", u.scheme, u.host, owner, repo)
 
 	if _, err := u.page.Goto(issuesNewURL, playwright.PageGotoOptions{
 		WaitUntil: playwright.WaitUntilStateLoad,
@@ -232,7 +205,11 @@ func (u *PlaywrightUploader) Init(stateFile, owner, repo, repoID string, headed 
 			if time.Now().After(deadline) {
 				return fmt.Errorf("login timed out (5 minutes)")
 			}
-			time.Sleep(2 * time.Second)
+			select {
+			case <-ctx.Done():
+				return ctx.Err()
+			case <-time.After(2 * time.Second):
+			}
 			ok, pollErr := u.isLoggedIn()
 			if pollErr != nil {
 				// Page may still be navigating; ignore transient errors.
@@ -267,30 +244,6 @@ func (u *PlaywrightUploader) Init(stateFile, owner, repo, repoID string, headed 
 		}
 	}
 
-	// Store the caller-supplied repository ID (obtained via the GitHub API).
-	u.repoID = repoID
-
-	// The issues/new page is a React SPA: the CSRF token is injected into the
-	// DOM asynchronously after the initial load event. Poll until it appears.
-	if _, waitErr := u.page.WaitForFunction(
-		`document.querySelector('meta[name="csrf-token"]') !== null ||`+
-			`document.querySelector('input[name="authenticity_token"]') !== null`,
-		playwright.PageWaitForFunctionOptions{Timeout: playwright.Float(15000)},
-	); waitErr != nil {
-		return fmt.Errorf("wait for CSRF token on issues/new (URL: %s): %w", u.page.URL(), waitErr)
-	}
-
-	// Extract the CSRF token. The issues/new page is not CDN-cached and always
-	// includes meta[name="csrf-token"] for authenticated users.
-	csrf, err := u.extractCSRF()
-	if err != nil {
-		return fmt.Errorf("acquire CSRF token: %w", err)
-	}
-	if csrf == "" {
-		return fmt.Errorf("CSRF token not found on issues/new page (URL: %s)", u.page.URL())
-	}
-	u.csrf = csrf
-	u.repoURL = repoURL
 	return nil
 }
 
@@ -366,7 +319,7 @@ func (u *PlaywrightUploader) Upload(localPath, filename string) (string, error) 
 		return "", fmt.Errorf("upload policy missing asset href for %q", filename)
 	}
 
-	httpClient := &http.Client{}
+	httpClient := &http.Client{Timeout: 5 * time.Minute}
 
 	// Step 2: upload file bytes to S3 using the presigned multipart form.
 	// S3 presigned POSTs do not require session cookies or CSRF tokens.
@@ -499,22 +452,13 @@ func Restore(ctx context.Context, g *GitHubClient, repo repository.Repository, i
 	// Initialize the Playwright uploader (unless dry-run).
 	var uploader *PlaywrightUploader
 	if !opts.DryRun {
-		// Obtain the repository ID via the GitHub API. This is required by
-		// GitHub's upload policies endpoint and is more reliable than scraping
-		// it from a browser page.
-		ghRepo, err := g.GetRepository(ctx, owner, repoName)
-		if err != nil {
-			return fmt.Errorf("get repository info: %w", err)
-		}
-		repoID := strconv.FormatInt(ghRepo.GetID(), 10)
-
 		uploader, err = NewPlaywrightUploader(opts.StateFile, repo.Host, opts.Headed)
 		if err != nil {
 			return fmt.Errorf("initialize browser uploader: %w", err)
 		}
 		defer uploader.Close()
 
-		if err := uploader.Init(opts.StateFile, owner, repoName, repoID, opts.Headed); err != nil {
+		if err := uploader.Init(ctx, opts.StateFile, owner, repoName, opts.Headed); err != nil {
 			return fmt.Errorf("initialize browser session: %w", err)
 		}
 	}
@@ -528,11 +472,20 @@ func Restore(ctx context.Context, g *GitHubClient, repo repository.Repository, i
 	// Build URL replacement map: old asset URL → new CDN URL.
 	urlReplacements := make(map[string]string)
 	for _, a := range meta.Assets {
+		if err := ctx.Err(); err != nil {
+			return err
+		}
 		if len(prFilter) > 0 && !prFilter[a.PRNumber] {
 			continue
 		}
 		if a.LocalFile == "" {
 			logger.Warn("asset has no local file, skipping", "url", a.AssetURL)
+			continue
+		}
+		// Reject absolute paths and directory traversal sequences to prevent
+		// metadata.json from being used to read files outside inputDir.
+		if filepath.IsAbs(a.LocalFile) || strings.Contains(a.LocalFile, "..") {
+			logger.Warn("asset local file path is not allowed, skipping", "file", a.LocalFile)
 			continue
 		}
 		localPath := filepath.Join(inputDir, a.LocalFile)
@@ -586,6 +539,9 @@ func Restore(ctx context.Context, g *GitHubClient, repo repository.Repository, i
 	}
 	locsToUpdate := make(map[locKey]bool)
 	for _, a := range meta.Assets {
+		if len(prFilter) > 0 && !prFilter[a.PRNumber] {
+			continue
+		}
 		if _, ok := urlReplacements[a.AssetURL]; !ok {
 			continue
 		}
