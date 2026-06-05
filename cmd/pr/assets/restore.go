@@ -22,6 +22,8 @@ func NewRestoreCmd() *cobra.Command {
 	var dryRunFlag bool
 	var browserStateFlag string
 	var headedFlag bool
+	var clearCacheFlag bool
+	var clearCacheOnlyFlag bool
 
 	cmd := &cobra.Command{
 		Use:   "restore",
@@ -40,6 +42,25 @@ Example:
 		RunE: func(cmd *cobra.Command, args []string) error {
 			ctx := cmd.Context()
 
+			// Resolve the state file path early so --clear-cache-only can use
+			// it without requiring --repo or input file flags.
+			stateFile := browserStateFlag
+			if stateFile == "" {
+				configDir, dirErr := os.UserConfigDir()
+				if dirErr != nil {
+					return fmt.Errorf("failed to determine user config directory: %w", dirErr)
+				}
+				stateFile = filepath.Join(configDir, "gh-diet-kit", "playwright-state.json")
+			}
+
+			if clearCacheOnlyFlag {
+				if removeErr := os.Remove(stateFile); removeErr != nil && !os.IsNotExist(removeErr) {
+					return fmt.Errorf("failed to clear browser cache %q: %w", stateFile, removeErr)
+				}
+				cmd.Printf("browser session cleared: %s\n", stateFile)
+				return nil
+			}
+
 			repo, err := parser.Repository(parser.RepositoryInput(repoFlag))
 			if err != nil {
 				return fmt.Errorf("failed to determine repository: %w", err)
@@ -55,20 +76,12 @@ Example:
 				metaPath = filepath.Join(inputDirFlag, "metadata.json")
 			}
 
-			stateFile := browserStateFlag
-			if stateFile == "" {
-				configDir, dirErr := os.UserConfigDir()
-				if dirErr != nil {
-					return fmt.Errorf("failed to determine user config directory: %w", dirErr)
-				}
-				stateFile = filepath.Join(configDir, "gh-diet-kit", "playwright-state.json")
-			}
-
 			opts := assets.RestoreOptions{
-				PRNumbers: prFlag,
-				DryRun:    dryRunFlag,
-				StateFile: stateFile,
-				Headed:    headedFlag,
+				PRNumbers:  prFlag,
+				DryRun:     dryRunFlag,
+				StateFile:  stateFile,
+				Headed:     headedFlag,
+				ClearCache: clearCacheFlag,
 			}
 
 			if err := assets.Restore(ctx, g, repo, inputDirFlag, metaPath, opts); err != nil {
@@ -86,6 +99,8 @@ Example:
 	cmd.Flags().BoolVarP(&dryRunFlag, "dryrun", "n", false, "Preview uploads and replacements without making any changes")
 	cmd.Flags().StringVar(&browserStateFlag, "browser-state", "", "Path to the Playwright browser state file for session persistence (default: user config dir)")
 	cmd.Flags().BoolVar(&headedFlag, "headed", false, "Run browser in headed (visible) mode even when a saved session exists (useful for debugging)")
+	cmd.Flags().BoolVar(&clearCacheFlag, "clear-cache", false, "Delete the saved browser session after the restore completes")
+	cmd.Flags().BoolVar(&clearCacheOnlyFlag, "clear-cache-only", false, "Delete the saved browser session and exit without restoring")
 
 	return cmd
 }

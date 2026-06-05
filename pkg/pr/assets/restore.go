@@ -1,16 +1,21 @@
 package assets
 
 import (
+	"bytes"
 	"context"
 	"encoding/base64"
 	"encoding/json"
 	"fmt"
+	"io"
 	"mime"
+	"mime/multipart"
+	"net/http"
 	"net/url"
 	"os"
 	"path/filepath"
 	"strconv"
 	"strings"
+	"time"
 
 	"github.com/cli/go-gh/v2/pkg/repository"
 	"github.com/google/go-github/v84/github"
@@ -19,17 +24,16 @@ import (
 	"github.com/srz-zumix/go-gh-extension/pkg/logger"
 )
 
-// uploadPolicy is the JSON response from GitHub's upload policies endpoint.
+// uploadPolicy is the JSON response from GitHub's /upload/policies/assets endpoint.
 type uploadPolicy struct {
-	UploadURL string                 `json:"upload_url"`
-	Header    map[string]string      `json:"header"`
-	Form      map[string]interface{} `json:"form"`
+	UploadURL string            `json:"upload_url"`
+	Form      map[string]string `json:"form"`
 	Asset     struct {
-		Href        string `json:"href"`
-		Name        string `json:"name"`
-		ContentType string `json:"content_type"`
-		Size        int    `json:"size"`
+		Href string `json:"href"`
 	} `json:"asset"`
+	AssetUploadURL               string `json:"asset_upload_url"`
+	UploadAuthenticityToken      string `json:"upload_authenticity_token"`
+	AssetUploadAuthenticityToken string `json:"asset_upload_authenticity_token"`
 }
 
 // PlaywrightUploader manages a Playwright browser session for uploading assets to GitHub.
@@ -220,16 +224,23 @@ func (u *PlaywrightUploader) Init(stateFile, owner, repo, repoID string, headed 
 		}
 		fmt.Fprintln(os.Stderr, "Please log in to GitHub in the browser window.")
 
-		repoGlob := fmt.Sprintf("%s://%s/%s/%s**", u.scheme, u.host, owner, repo)
-		if waitErr := u.page.WaitForURL(repoGlob, playwright.PageWaitForURLOptions{
-			Timeout: playwright.Float(300000),
-		}); waitErr != nil {
-			return fmt.Errorf("login timed out (5 minutes): %w", waitErr)
-		}
-		if waitErr := u.page.WaitForLoadState(playwright.PageWaitForLoadStateOptions{
-			State: playwright.LoadStateDomcontentloaded,
-		}); waitErr != nil {
-			return fmt.Errorf("wait for page load after login: %w", waitErr)
+		// Poll until the user is logged in. This is more robust than WaitForURL
+		// because it works regardless of intermediate pages GitHub may show
+		// (2FA, SSO, device verification, SAML, etc.).
+		deadline := time.Now().Add(5 * time.Minute)
+		for {
+			if time.Now().After(deadline) {
+				return fmt.Errorf("login timed out (5 minutes)")
+			}
+			time.Sleep(2 * time.Second)
+			ok, pollErr := u.isLoggedIn()
+			if pollErr != nil {
+				// Page may still be navigating; ignore transient errors.
+				continue
+			}
+			if ok {
+				break
+			}
 		}
 
 		// Save session for future headless runs.
@@ -280,33 +291,17 @@ func (u *PlaywrightUploader) Init(stateFile, owner, repo, repoID string, headed 
 	}
 	u.csrf = csrf
 	u.repoURL = repoURL
-	// Wait for network idle so React finishes hydrating the page (including the
-	// markdown editor) before Upload() tries to dispatch drag-drop events.
-	// Ignore the error: some pages have background polling that prevents a true
-	// idle; as long as the CSRF token was found the page is sufficiently ready.
-	_ = u.page.WaitForLoadState(playwright.PageWaitForLoadStateOptions{
-		State:   playwright.LoadStateNetworkidle,
-		Timeout: playwright.Float(15000),
-	})
 	return nil
 }
 
 // Upload uploads the file at localPath to GitHub and returns the new CDN URL.
-// It dispatches a native drag-drop event with a DataTransfer containing the
-// file onto the markdown editor textarea. GitHub's React markdown editor
-// component handles the drop event, posting to /upload/policies/assets and
-// then uploading to S3 — all with proper CSRF/session handling because the
-// request originates from inside the browser page context.
 //
-// The full upload pipeline consists of three browser-initiated requests:
-//  1. POST /upload/policies/assets → GitHub issues a presigned S3 URL
-//  2. PUT  <s3-upload-url>         → browser uploads the file to S3
-//  3. POST /upload/assets/{id}     → GitHub confirms the S3 upload succeeded
-//
-// Upload waits for step 3 before returning so that the caller can be confident
-// the CDN URL is actually reachable. The outer ExpectResponse listener for the
-// confirmation endpoint is registered before the inner one for the policy
-// endpoint, ensuring no race with either request.
+// Upload pipeline:
+//  1. Playwright drag-drop event → browser sends POST /upload/policies/assets
+//     with proper session cookies and CSRF. ExpectResponse captures the response.
+//  2. Go net/http POST to S3 presigned URL (no auth required).
+//  3. Go net/http PUT /upload/assets/{id} using the upload-specific
+//     asset_upload_authenticity_token returned in the policy (not the page CSRF).
 func (u *PlaywrightUploader) Upload(localPath, filename string) (string, error) {
 	data, err := os.ReadFile(localPath)
 	if err != nil {
@@ -318,75 +313,49 @@ func (u *PlaywrightUploader) Upload(localPath, filename string) (string, error) 
 		contentType = "application/octet-stream"
 	}
 
-	// Base64-encode the file so it can be passed through page.Evaluate().
+	// Base64-encode so the file bytes survive the Go→JS boundary in Evaluate.
 	b64 := base64.StdEncoding.EncodeToString(data)
 
-	// policyBody is populated by the inner ExpectResponse callback and read
-	// by the outer one after the confirmation response arrives.
-	var policyBody []byte
-
-	// Outer listener: wait for the GitHub asset-confirmation request
-	// (POST /upload/assets/{id}). This is distinct from /upload/policies/assets:
-	// the pattern "/upload/assets/" does not match "/upload/policies/assets".
-	confirmResp, err := u.page.ExpectResponse(
+	// Step 1: let the browser make the authenticated policy request.
+	// ExpectResponse registers the listener BEFORE the drag-drop fires so there
+	// is no race. The browser carries the correct session cookies and CSRF token,
+	// sidestepping any server-side origin/CSRF validation that rejects Go HTTP.
+	policyResp, err := u.page.ExpectResponse(
 		func(rawURL string) bool {
-			return strings.Contains(rawURL, "/upload/assets/")
+			return strings.Contains(rawURL, "/upload/policies/assets")
 		},
 		func() error {
-			// Inner listener: wait for the upload-policy response while
-			// simultaneously triggering the drag-drop that starts the flow.
-			policyResp, policyErr := u.page.ExpectResponse(
-				func(rawURL string) bool {
-					return strings.Contains(rawURL, "/upload/policies/assets")
-				},
-				func() error {
-					// Dispatch a drag-drop event with the file data onto the markdown
-					// editor. The React MarkdownEditor component listens for native drop
-					// events, reads dataTransfer.files, and triggers the upload flow.
-					_, evalErr := u.page.Evaluate(`
-						([b64, fname, ctype]) => {
-							const binary = atob(b64);
-							const bytes = new Uint8Array(binary.length);
-							for (let i = 0; i < binary.length; i++) bytes[i] = binary.charCodeAt(i);
-							const file = new File([bytes], fname, {type: ctype});
-							const dt = new DataTransfer();
-							dt.items.add(file);
-							// Target the React textarea; fall back to file-attachment or any textarea.
-							const el = document.querySelector('.prc-Textarea-TextArea-snlco') ||
-								document.querySelector('file-attachment') ||
-								document.querySelector('textarea');
-							if (!el) return;
-							el.dispatchEvent(new DragEvent('dragenter', {dataTransfer: dt, bubbles: true}));
-							el.dispatchEvent(new DragEvent('dragover',  {dataTransfer: dt, bubbles: true, cancelable: true}));
-							el.dispatchEvent(new DragEvent('drop',      {dataTransfer: dt, bubbles: true, cancelable: true}));
-						}
-					`, []interface{}{b64, filename, contentType})
-					return evalErr
-				},
-				playwright.PageExpectResponseOptions{Timeout: playwright.Float(30000)},
-			)
-			if policyErr != nil {
-				return fmt.Errorf("wait for upload policy: %w", policyErr)
-			}
-			var bodyErr error
-			policyBody, bodyErr = policyResp.Body()
-			if bodyErr != nil {
-				return fmt.Errorf("read upload policy body for %q: %w", filename, bodyErr)
-			}
-			if policyResp.Status() != 200 && policyResp.Status() != 201 {
-				return fmt.Errorf("upload policy returned %d for %q: %s", policyResp.Status(), filename, string(policyBody))
-			}
-			return nil
+			_, evalErr := u.page.Evaluate(`
+				([b64, fname, ctype]) => {
+					const binary = atob(b64);
+					const bytes = new Uint8Array(binary.length);
+					for (let i = 0; i < binary.length; i++) bytes[i] = binary.charCodeAt(i);
+					const file = new File([bytes], fname, {type: ctype});
+					const dt = new DataTransfer();
+					dt.items.add(file);
+					// Target the Primer React textarea; fall back broadly.
+					const el = document.querySelector('.prc-Textarea-TextArea-snlco') ||
+						document.querySelector('file-attachment') ||
+						document.querySelector('textarea');
+					if (!el) return;
+					el.dispatchEvent(new DragEvent('dragenter', {dataTransfer: dt, bubbles: true}));
+					el.dispatchEvent(new DragEvent('dragover',  {dataTransfer: dt, bubbles: true, cancelable: true}));
+					el.dispatchEvent(new DragEvent('drop',      {dataTransfer: dt, bubbles: true, cancelable: true}));
+				}
+			`, []interface{}{b64, filename, contentType})
+			return evalErr
 		},
-		// The confirmation POST happens after the S3 upload, so allow more time.
-		playwright.PageExpectResponseOptions{Timeout: playwright.Float(60000)},
+		playwright.PageExpectResponseOptions{Timeout: playwright.Float(30000)},
 	)
 	if err != nil {
-		return "", fmt.Errorf("upload %q: %w", filename, err)
+		return "", fmt.Errorf("upload policy request for %q: %w", filename, err)
 	}
-	if confirmResp.Status() != 200 && confirmResp.Status() != 201 {
-		confirmBody, _ := confirmResp.Body()
-		return "", fmt.Errorf("asset upload confirmation returned %d for %q: %s", confirmResp.Status(), filename, string(confirmBody))
+	policyBody, err := policyResp.Body()
+	if err != nil {
+		return "", fmt.Errorf("read upload policy body for %q: %w", filename, err)
+	}
+	if policyResp.Status() != http.StatusOK && policyResp.Status() != http.StatusCreated {
+		return "", fmt.Errorf("upload policy returned %d for %q: %s", policyResp.Status(), filename, string(policyBody))
 	}
 
 	var policy uploadPolicy
@@ -396,6 +365,87 @@ func (u *PlaywrightUploader) Upload(localPath, filename string) (string, error) 
 	if policy.Asset.Href == "" {
 		return "", fmt.Errorf("upload policy missing asset href for %q", filename)
 	}
+
+	httpClient := &http.Client{}
+
+	// Step 2: upload file bytes to S3 using the presigned multipart form.
+	// S3 presigned POSTs do not require session cookies or CSRF tokens.
+	var s3Buf bytes.Buffer
+	mw := multipart.NewWriter(&s3Buf)
+	for k, v := range policy.Form {
+		if err := mw.WriteField(k, v); err != nil {
+			return "", fmt.Errorf("write S3 form field %q: %w", k, err)
+		}
+	}
+	fw, err := mw.CreateFormFile("file", filename)
+	if err != nil {
+		return "", fmt.Errorf("create S3 file field: %w", err)
+	}
+	if _, err := fw.Write(data); err != nil {
+		return "", fmt.Errorf("write file data to S3 form: %w", err)
+	}
+	if err := mw.Close(); err != nil {
+		return "", fmt.Errorf("close S3 multipart writer: %w", err)
+	}
+	s3Req, err := http.NewRequest(http.MethodPost, policy.UploadURL, &s3Buf)
+	if err != nil {
+		return "", fmt.Errorf("create S3 request: %w", err)
+	}
+	s3Req.Header.Set("Content-Type", mw.FormDataContentType())
+	s3Resp, err := httpClient.Do(s3Req)
+	if err != nil {
+		return "", fmt.Errorf("S3 upload for %q: %w", filename, err)
+	}
+	defer s3Resp.Body.Close() //nolint:errcheck
+	if s3Resp.StatusCode != http.StatusOK &&
+		s3Resp.StatusCode != http.StatusCreated &&
+		s3Resp.StatusCode != http.StatusNoContent {
+		s3Body, _ := io.ReadAll(io.LimitReader(s3Resp.Body, 4096))
+		return "", fmt.Errorf("S3 upload returned %d for %q: %s", s3Resp.StatusCode, filename, string(s3Body))
+	}
+
+	// Step 3: confirm the upload using the browser so session cookies are
+	// included automatically. The upload-specific asset_upload_authenticity_token
+	// is passed as the body; it is scoped to this single upload, not the page CSRF.
+	confirmToken := policy.AssetUploadAuthenticityToken
+	if confirmToken == "" {
+		confirmToken = policy.UploadAuthenticityToken
+	}
+	confirmBodyStr := url.Values{"authenticity_token": {confirmToken}}.Encode()
+	confirmResult, err := u.page.Evaluate(`
+		([confirmURL, body]) => fetch(confirmURL, {
+			method: 'PUT',
+			headers: {
+				'Content-Type': 'application/x-www-form-urlencoded; charset=UTF-8',
+				'Accept': 'application/json',
+				'X-Requested-With': 'XMLHttpRequest',
+			},
+			body: body,
+			credentials: 'include',
+		}).then(async r => ({ status: r.status, body: await r.text() }))
+	`, []interface{}{policy.AssetUploadURL, confirmBodyStr})
+	if err != nil {
+		return "", fmt.Errorf("upload confirm request for %q: %w", filename, err)
+	}
+	resultMap, ok := confirmResult.(map[string]interface{})
+	if !ok {
+		return "", fmt.Errorf("unexpected confirm response type for %q: %T", filename, confirmResult)
+	}
+	var confirmStatus int
+	switch v := resultMap["status"].(type) {
+	case float64:
+		confirmStatus = int(v)
+	case int:
+		confirmStatus = v
+	case int64:
+		confirmStatus = int(v)
+	default:
+		return "", fmt.Errorf("unexpected confirm status type for %q: %T", filename, resultMap["status"])
+	}
+	if confirmStatus != http.StatusOK && confirmStatus != http.StatusCreated {
+		return "", fmt.Errorf("upload confirmation returned %d for %q: %s", confirmStatus, filename, resultMap["body"])
+	}
+
 	return policy.Asset.Href, nil
 }
 
@@ -424,6 +474,9 @@ type RestoreOptions struct {
 	// Headed forces the browser to run in headed (visible) mode even when a
 	// saved session file exists. Useful for debugging.
 	Headed bool
+	// ClearCache deletes the saved browser session file after the restore
+	// completes successfully.
+	ClearCache bool
 }
 
 // Restore reads metadata from metaPath, uploads each local asset file to the
@@ -590,6 +643,13 @@ func Restore(ctx context.Context, g *GitHubClient, repo repository.Repository, i
 				logger.Info("updated review comment", "id", loc.LocationID)
 			}
 		}
+	}
+
+	if opts.ClearCache {
+		if removeErr := os.Remove(opts.StateFile); removeErr != nil && !os.IsNotExist(removeErr) {
+			return fmt.Errorf("clear browser cache after restore %q: %w", opts.StateFile, removeErr)
+		}
+		logger.Info("browser session cleared", "path", opts.StateFile)
 	}
 
 	return nil

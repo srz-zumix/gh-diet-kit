@@ -286,6 +286,10 @@ commands:
     flags:
       - name: --browser-state
         description: Path to the Playwright browser state file for session persistence (default <user-config-dir>/gh-diet-kit/playwright-state.json)
+      - name: --clear-cache
+        description: Delete the saved browser session after the restore completes (default false)
+      - name: --clear-cache-only
+        description: Delete the saved browser session and exit without restoring (default false)
       - name: --dryrun
         shorthand: -n
         description: Preview uploads and URL replacements without making any changes (default false)

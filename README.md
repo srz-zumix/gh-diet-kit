@@ -264,6 +264,8 @@ gh diet-kit pr assets restore [flags]
 | Flag | Shorthand | Default | Description |
 | ------ | ----------- | ------- | ------------- |
 | `--browser-state` | | `<user-config-dir>/gh-diet-kit/playwright-state.json` | Path to the Playwright browser state file for session persistence |
+| `--clear-cache` | | `false` | Delete the saved browser session after the restore completes |
+| `--clear-cache-only` | | `false` | Delete the saved browser session and exit without restoring |
 | `--dryrun` | `-n` | `false` | Preview uploads and URL replacements without making any changes |
 | `--headed` | | `false` | Run browser in headed (visible) mode even when a saved session exists |
 | `--input-dir` | | `./pr-assets` | Directory containing the downloaded asset files |
