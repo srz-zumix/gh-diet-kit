@@ -270,7 +270,7 @@ gh diet-kit pr assets restore [flags]
 | `--headed` | | `false` | Run browser in headed (visible) mode even when a saved session exists |
 | `--input-dir` | | `./pr-assets` | Directory containing the downloaded asset files |
 | `--metadata-file` | | `<input-dir>/metadata.json` | Path to the metadata JSON file |
-| `--pr` | | (all PRs) | PR numbers to restore (repeatable) |
+| `--pr` | | all PRs | PR numbers to restore (repeatable) |
 | `--repo` | `-R` | current repository | Destination repository in `[HOST/]OWNER/REPO` format |
 
 #### tree detect
