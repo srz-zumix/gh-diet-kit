@@ -39,6 +39,7 @@ func NewBlobsCmd() *cobra.Command {
 	cmd := &cobra.Command{
 		Use:   "blobs",
 		Short: "List blobs not reachable from any branch or tag ref",
+		Args:  cobra.NoArgs,
 		Long: `List blobs that are referenced only by commits from squash or rebase
 merged pull requests, commits dropped by force-pushes on PR head branches, or
 commits from closed unmerged pull requests, and are not reachable from any

@@ -30,6 +30,7 @@ func NewDetectCmd() *cobra.Command {
 	cmd := &cobra.Command{
 		Use:   "detect",
 		Short: "Detect files that should be tracked by Git LFS",
+		Args:  cobra.NoArgs,
 		Long: `Detect files in the repository whose size exceeds a threshold and
 are not currently stored as Git LFS objects.
 
@@ -132,4 +133,3 @@ Output fields: PATH, SIZE, SHA`,
 	}
 	return cmd
 }
-

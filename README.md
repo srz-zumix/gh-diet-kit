@@ -251,6 +251,28 @@ gh diet-kit pr assets list [flags]
 | `--state` | | `all` | Filter pull requests by state: `all`, `open`, `closed` |
 | `--template` | `-t` | | Format JSON output using a Go template |
 
+#### pr assets restore
+
+Read the `metadata.json` produced by `pr assets dump`, upload each local asset file to the destination repository using Playwright browser automation, and replace the old source asset URLs with the new destination CDN URLs in PR bodies, issue comments, and review comments.
+
+On the first run a browser window is opened so you can log in to GitHub interactively. The session is persisted to the `--browser-state` file for headless operation on subsequent runs.
+
+```sh
+gh diet-kit pr assets restore [flags]
+```
+
+| Flag | Shorthand | Default | Description |
+| ------ | ----------- | ------- | ------------- |
+| `--browser-state` | | `<user-config-dir>/gh-diet-kit/playwright-state.json` | Path to the Playwright browser state file for session persistence |
+| `--clear-cache` | | `false` | Delete the saved browser session after the restore completes |
+| `--clear-cache-only` | | `false` | Delete the saved browser session and exit without restoring |
+| `--dryrun` | `-n` | `false` | Preview uploads and URL replacements without making any changes |
+| `--headed` | | `false` | Run browser in headed (visible) mode even when a saved session exists |
+| `--input-dir` | | `./pr-assets` | Directory containing the downloaded asset files |
+| `--metadata-file` | | `<input-dir>/metadata.json` | Path to the metadata JSON file |
+| `--pr` | | all PRs | PR numbers to restore (repeatable) |
+| `--repo` | `-R` | current repository | Destination repository in `[HOST/]OWNER/REPO` format |
+
 #### tree detect
 
 Analyse the git tree structure of a repository and report directories whose direct entry count meets or exceeds a threshold.

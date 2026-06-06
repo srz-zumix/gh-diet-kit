@@ -209,7 +209,7 @@ func FetchPRs(ctx context.Context, g *GitHubClient, repo repository.Repository, 
 	if len(opts.PRNumbers) > 0 {
 		prs := make([]*github.PullRequest, 0, len(opts.PRNumbers))
 		for _, num := range opts.PRNumbers {
-			pr, err := g.GetPullRequest(ctx, repo.Owner, repo.Name, num)
+			pr, err := gh.GetPullRequest(ctx, g, repo, num)
 			if err != nil {
 				return nil, fmt.Errorf("failed to get PR #%d: %w", num, err)
 			}
@@ -237,7 +237,7 @@ func ScanSinglePR(ctx context.Context, g *GitHubClient, repo repository.Reposito
 	prAssets = append(prAssets, assetsFromText(bodyText(pr.Body), num, url, LocationBody, 0, patterns)...)
 
 	// 2. Issue-style comments
-	issueComments, err := g.ListIssueComments(ctx, repo.Owner, repo.Name, num)
+	issueComments, err := gh.ListIssueComments(ctx, g, repo, num)
 	if err != nil {
 		logger.Warn("failed to list issue comments", "pr", num, "error", err)
 	} else {
@@ -247,7 +247,7 @@ func ScanSinglePR(ctx context.Context, g *GitHubClient, repo repository.Reposito
 	}
 
 	// 3. Code review comments
-	reviewComments, err := g.ListPullRequestReviewComments(ctx, repo.Owner, repo.Name, num)
+	reviewComments, err := gh.ListPullRequestReviewComments(ctx, g, repo, num)
 	if err != nil {
 		logger.Warn("failed to list review comments", "pr", num, "error", err)
 	} else {

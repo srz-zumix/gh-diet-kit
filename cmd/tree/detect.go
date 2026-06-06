@@ -26,6 +26,7 @@ func NewDetectCmd() *cobra.Command {
 	cmd := &cobra.Command{
 		Use:   "detect",
 		Short: "Detect directories with many entries that bloat git tree objects",
+		Args:  cobra.NoArgs,
 		Long: `Analyse the git tree structure of a repository and report directories
 whose direct entry count (files + subdirectories) meets or exceeds a threshold.
 

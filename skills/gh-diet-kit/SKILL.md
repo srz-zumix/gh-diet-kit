@@ -280,6 +280,31 @@ commands:
         shorthand: -t
         description: Format JSON output using a Go template
 
+  - name: gh diet-kit pr assets restore
+    description: Read the metadata.json produced by "pr assets dump", upload each local asset file to the destination repository using Playwright browser automation, and replace the old source asset URLs with the new destination CDN URLs in PR bodies, issue comments, and review comments. On the first run a browser window opens for interactive GitHub login; the session is saved to --browser-state for headless operation on subsequent runs.
+    usage: gh diet-kit pr assets restore [flags]
+    flags:
+      - name: --browser-state
+        description: Path to the Playwright browser state file for session persistence (default <user-config-dir>/gh-diet-kit/playwright-state.json)
+      - name: --clear-cache
+        description: Delete the saved browser session after the restore completes (default false)
+      - name: --clear-cache-only
+        description: Delete the saved browser session and exit without restoring (default false)
+      - name: --dryrun
+        shorthand: -n
+        description: Preview uploads and URL replacements without making any changes (default false)
+      - name: --headed
+        description: Run browser in headed (visible) mode even when a saved session exists (default false)
+      - name: --input-dir
+        description: Directory containing the downloaded asset files (default ./pr-assets)
+      - name: --metadata-file
+        description: Path to the metadata JSON file (default <input-dir>/metadata.json)
+      - name: --pr
+        description: PR numbers to restore, repeatable (default all PRs)
+      - name: --repo
+        shorthand: -R
+        description: Destination repository in "[HOST/]OWNER/REPO" format (default current repository)
+
 ---
 
 # gh-diet-kit
