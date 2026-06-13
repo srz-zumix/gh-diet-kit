@@ -7,7 +7,6 @@ import (
 	"time"
 
 	"github.com/cli/cli/v2/pkg/cmdutil"
-	"github.com/cli/go-gh/v2/pkg/api"
 	"github.com/dustin/go-humanize"
 	"github.com/spf13/cobra"
 	"github.com/srz-zumix/gh-diet-kit/pkg/pr/assets"
@@ -59,10 +58,7 @@ Example:
 				return fmt.Errorf("failed to create GitHub client: %w", err)
 			}
 
-			httpClient, err := api.NewHTTPClient(api.ClientOptions{Host: repo.Host})
-			if err != nil {
-				return fmt.Errorf("failed to create HTTP client: %w", err)
-			}
+			httpClient := g.GetClient().Client()
 			// downloadClient switches to http.DefaultTransport for non-GitHub hosts
 			// (e.g. Azure Blob Storage on GHES) so that API-specific headers are not
 			// sent to third-party storage backends during redirects.
