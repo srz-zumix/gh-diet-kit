@@ -5,7 +5,6 @@ import (
 	"net/http"
 
 	"github.com/cli/cli/v2/pkg/cmdutil"
-	"github.com/cli/go-gh/v2/pkg/api"
 	"github.com/dustin/go-humanize"
 	"github.com/spf13/cobra"
 	"github.com/srz-zumix/gh-diet-kit/pkg/pr/assets"
@@ -55,10 +54,7 @@ Output fields: PR_NUMBER, LOCATION, LOCATION_ID, TYPE, FILENAME, FILE_SIZE, ASSE
 
 			var httpClient *http.Client
 			if !noFileSizeFlag {
-				httpClient, err = api.NewHTTPClient(api.ClientOptions{Host: repo.Host})
-				if err != nil {
-					return fmt.Errorf("failed to create HTTP client: %w", err)
-				}
+				httpClient = g.GetClient().Client()
 			}
 
 			opts := assets.AssetsOptions{
