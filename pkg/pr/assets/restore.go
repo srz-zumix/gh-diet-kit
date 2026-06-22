@@ -559,6 +559,10 @@ func Restore(ctx context.Context, g *GitHubClient, repo repository.Repository, i
 		locsToUpdate[key][a.AssetURL] = true
 	}
 
+	// Cache PR comments so URL-based fallback lookups list each PR's comments at
+	// most once across the whole restore run (avoids an N+1 listing pattern).
+	cache := newCommentCache(g, repo)
+
 	if opts.DryRun {
 		// Cache resolved destination location URLs to avoid duplicate API calls
 		// when several assets share the same comment.
@@ -574,7 +578,7 @@ func Restore(ctx context.Context, g *GitHubClient, repo repository.Repository, i
 			key := locKey{a.PRNumber, a.Location, a.LocationID}
 			dstLoc, cached := dstURLCache[key]
 			if !cached {
-				dstLoc = resolveDstLocationURL(ctx, g, repo, a.PRNumber, a.Location, a.LocationID, locsToUpdate[key])
+				dstLoc = resolveDstLocationURL(ctx, g, repo, cache, a.PRNumber, a.Location, a.LocationID, locsToUpdate[key])
 				dstURLCache[key] = dstLoc
 			}
 			logger.Info("dry-run: would replace URL",
@@ -616,7 +620,7 @@ func Restore(ctx context.Context, g *GitHubClient, repo repository.Repository, i
 				// migrated and GitHub re-assigned comment IDs). Fall back to
 				// searching the PR's comments for one that contains the old URL.
 				logger.Warn("failed to fetch issue comment, searching by content", "id", loc.LocationID, "pr", loc.PRNumber, "err", fetchErr)
-				comment, fetchErr = findIssueCommentByURLs(ctx, g, repo, loc.PRNumber, oldURLs)
+				comment, fetchErr = findIssueCommentByURLs(ctx, cache, loc.PRNumber, oldURLs)
 				if fetchErr != nil {
 					logger.Warn("failed to search issue comment", "id", loc.LocationID, "pr", loc.PRNumber, "err", fetchErr)
 					continue
@@ -643,7 +647,7 @@ func Restore(ctx context.Context, g *GitHubClient, repo repository.Repository, i
 				// migrated and GitHub re-assigned comment IDs). Fall back to
 				// searching the PR's comments for one that contains the old URL.
 				logger.Warn("failed to fetch review comment, searching by content", "id", loc.LocationID, "pr", loc.PRNumber, "err", fetchErr)
-				comment, fetchErr = findReviewCommentByURLs(ctx, g, repo, loc.PRNumber, oldURLs)
+				comment, fetchErr = findReviewCommentByURLs(ctx, cache, loc.PRNumber, oldURLs)
 				if fetchErr != nil {
 					logger.Warn("failed to search review comment", "id", loc.LocationID, "pr", loc.PRNumber, "err", fetchErr)
 					continue
@@ -707,12 +711,12 @@ func prHTMLURL(repo repository.Repository, prNumber int) string {
 // a real restore. For comments it returns the live comment HTML URL (whose ID
 // may differ from the source after a migration). It returns an empty string when
 // the destination location cannot be resolved.
-func resolveDstLocationURL(ctx context.Context, g *GitHubClient, repo repository.Repository, prNumber int, location AssetLocation, locationID int64, oldURLs map[string]bool) string {
+func resolveDstLocationURL(ctx context.Context, g *GitHubClient, repo repository.Repository, cache *commentCache, prNumber int, location AssetLocation, locationID int64, oldURLs map[string]bool) string {
 	switch location {
 	case LocationIssueComment:
 		comment, err := gh.GetIssueComment(ctx, g, repo, locationID)
 		if err != nil {
-			comment, err = findIssueCommentByURLs(ctx, g, repo, prNumber, oldURLs)
+			comment, err = findIssueCommentByURLs(ctx, cache, prNumber, oldURLs)
 			if err != nil || comment == nil {
 				return ""
 			}
@@ -721,7 +725,7 @@ func resolveDstLocationURL(ctx context.Context, g *GitHubClient, repo repository
 	case LocationReviewComment:
 		comment, err := gh.GetPullRequestComment(ctx, g, repo, locationID)
 		if err != nil {
-			comment, err = findReviewCommentByURLs(ctx, g, repo, prNumber, oldURLs)
+			comment, err = findReviewCommentByURLs(ctx, cache, prNumber, oldURLs)
 			if err != nil || comment == nil {
 				return ""
 			}
@@ -752,6 +756,58 @@ func bodyContainsAnyURL(body string, urls map[string]bool) bool {
 	return false
 }
 
+// commentCache lazily lists and memoizes a PR's issue and review comments so
+// that repeated URL-based lookups within a single restore run reuse one listing
+// per PR instead of re-fetching them. This avoids an N+1 listing pattern when a
+// migration re-assigned many comment IDs and every lookup falls back to a search.
+type commentCache struct {
+	g    *GitHubClient
+	repo repository.Repository
+
+	issueComments  map[int][]*github.IssueComment
+	reviewComments map[int][]*github.PullRequestComment
+}
+
+// newCommentCache creates an empty comment cache bound to a client and repo.
+func newCommentCache(g *GitHubClient, repo repository.Repository) *commentCache {
+	return &commentCache{
+		g:              g,
+		repo:           repo,
+		issueComments:  make(map[int][]*github.IssueComment),
+		reviewComments: make(map[int][]*github.PullRequestComment),
+	}
+}
+
+// listIssueComments returns the PR's issue comments, fetching them once per PR
+// and serving subsequent calls from the cache.
+func (c *commentCache) listIssueComments(ctx context.Context, prNumber int) ([]*github.IssueComment, error) {
+	if comments, ok := c.issueComments[prNumber]; ok {
+		return comments, nil
+	}
+	comments, err := gh.ListIssueComments(ctx, c.g, c.repo, prNumber)
+	if err != nil {
+		logger.Warn("failed to list issue comments while searching", "pr", prNumber, "err", err)
+		return nil, err
+	}
+	c.issueComments[prNumber] = comments
+	return comments, nil
+}
+
+// listReviewComments returns the PR's review comments, fetching them once per PR
+// and serving subsequent calls from the cache.
+func (c *commentCache) listReviewComments(ctx context.Context, prNumber int) ([]*github.PullRequestComment, error) {
+	if comments, ok := c.reviewComments[prNumber]; ok {
+		return comments, nil
+	}
+	comments, err := gh.ListPullRequestReviewComments(ctx, c.g, c.repo, prNumber)
+	if err != nil {
+		logger.Warn("failed to list review comments while searching", "pr", prNumber, "err", err)
+		return nil, err
+	}
+	c.reviewComments[prNumber] = comments
+	return comments, nil
+}
+
 // findIssueCommentByURLs lists the PR's issue comments and returns the first one
 // whose body contains any of the given old asset URLs. It is used as a fallback
 // when the original comment ID is no longer valid (e.g. a repository migration
@@ -761,10 +817,9 @@ func bodyContainsAnyURL(body string, urls map[string]bool) bool {
 // and treating ties as ambiguous) is deliberate; see bodyContainsAnyURL for the
 // rationale. Because replaceURLs is an idempotent old->new rewrite, editing any
 // comment that still contains a tracked old URL is safe and correct.
-func findIssueCommentByURLs(ctx context.Context, g *GitHubClient, repo repository.Repository, prNumber int, oldURLs map[string]bool) (*github.IssueComment, error) {
-	comments, err := gh.ListIssueComments(ctx, g, repo, prNumber)
+func findIssueCommentByURLs(ctx context.Context, cache *commentCache, prNumber int, oldURLs map[string]bool) (*github.IssueComment, error) {
+	comments, err := cache.listIssueComments(ctx, prNumber)
 	if err != nil {
-		logger.Warn("failed to list issue comments while searching", "pr", prNumber, "err", err)
 		return nil, err
 	}
 	for _, c := range comments {
@@ -783,10 +838,9 @@ func findIssueCommentByURLs(ctx context.Context, g *GitHubClient, repo repositor
 //
 // As with findIssueCommentByURLs, returning the first any-match instead of a
 // hit-count best-match is deliberate; see bodyContainsAnyURL for the rationale.
-func findReviewCommentByURLs(ctx context.Context, g *GitHubClient, repo repository.Repository, prNumber int, oldURLs map[string]bool) (*github.PullRequestComment, error) {
-	comments, err := gh.ListPullRequestReviewComments(ctx, g, repo, prNumber)
+func findReviewCommentByURLs(ctx context.Context, cache *commentCache, prNumber int, oldURLs map[string]bool) (*github.PullRequestComment, error) {
+	comments, err := cache.listReviewComments(ctx, prNumber)
 	if err != nil {
-		logger.Warn("failed to list review comments while searching", "pr", prNumber, "err", err)
 		return nil, err
 	}
 	for _, c := range comments {
