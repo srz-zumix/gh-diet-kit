@@ -637,6 +637,9 @@ func Restore(ctx context.Context, g *GitHubClient, repo repository.Repository, i
 			if _, updateErr := gh.EditIssueComment(ctx, g, repo, comment, newBody); updateErr != nil {
 				logger.Warn("failed to update issue comment", "id", comment.GetID(), "err", updateErr)
 			} else {
+				// Reflect the edit in the (possibly cached) comment so a later
+				// URL-based fallback does not re-match this already-updated comment.
+				comment.Body = github.Ptr(newBody)
 				logger.Info("updated issue comment", "id", comment.GetID())
 			}
 
@@ -664,6 +667,9 @@ func Restore(ctx context.Context, g *GitHubClient, repo repository.Repository, i
 			if _, updateErr := gh.EditPullRequestComment(ctx, g, repo, comment, newBody); updateErr != nil {
 				logger.Warn("failed to update review comment", "id", comment.GetID(), "err", updateErr)
 			} else {
+				// Reflect the edit in the (possibly cached) comment so a later
+				// URL-based fallback does not re-match this already-updated comment.
+				comment.Body = github.Ptr(newBody)
 				logger.Info("updated review comment", "id", comment.GetID())
 			}
 		}
