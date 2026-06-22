@@ -53,6 +53,18 @@
 * Lint/Formatter（go fmt, go vet, staticcheck等）を通してからコミットする
 * 依存関係の循環(import cycle)が発生しないよう注意する
 
+### 設計判断メモ（レビューでの再指摘を避けるための注記）
+
+* `pkg/pr/assets/restore.go` のコメント内容検索フォールバック
+  （`bodyContainsAnyURL` / `findIssueCommentByURLs` / `findReviewCommentByURLs`）が
+  「最初に該当URLを含むコメント」を返す挙動は **意図的** です。
+  `replaceURLs` は old→new のURL置換を冪等かつ安全に行うため、対象URLを含む
+  コメントを編集すること自体に破壊的な「誤編集」リスクはありません。
+  URL一致数でランキングして best-match を選ぶ／タイを曖昧として skip する変更は、
+  正確性を改善しないどころか「同一アセットURLが複数コメントで再利用される」一般的な
+  ケース（全候補が1ヒットでタイ）で正当な更新を取りこぼすため、**採用しません**。
+  詳細は各関数の doc コメントを参照。
+
 ### パッケージ詳細
 
 #### cmd

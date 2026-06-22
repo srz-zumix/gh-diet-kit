@@ -733,6 +733,16 @@ func resolveDstLocationURL(ctx context.Context, g *GitHubClient, repo repository
 }
 
 // bodyContainsAnyURL reports whether body contains any of the given URLs.
+//
+// An any-match (rather than ranking candidates by how many URLs they contain)
+// is intentional. replaceURLs rewrites every old->new asset URL in whatever body
+// it is given, and that transform is idempotent and safe: applying it to a
+// comment that merely contains a tracked old URL is always the desired outcome,
+// never a destructive "wrong edit". Ranking by hit-count would not improve
+// correctness and would actively break the common case where a single asset URL
+// is reused across several comments (every candidate ties at one hit, so treating
+// ties as ambiguous would skip legitimate updates). Do not replace this with a
+// hit-count / best-match scheme.
 func bodyContainsAnyURL(body string, urls map[string]bool) bool {
 	for u := range urls {
 		if strings.Contains(body, u) {
@@ -746,6 +756,11 @@ func bodyContainsAnyURL(body string, urls map[string]bool) bool {
 // whose body contains any of the given old asset URLs. It is used as a fallback
 // when the original comment ID is no longer valid (e.g. a repository migration
 // re-assigned comment IDs). Returns (nil, nil) when no matching comment exists.
+//
+// Returning the first any-match (instead of scoring candidates by URL hit-count
+// and treating ties as ambiguous) is deliberate; see bodyContainsAnyURL for the
+// rationale. Because replaceURLs is an idempotent old->new rewrite, editing any
+// comment that still contains a tracked old URL is safe and correct.
 func findIssueCommentByURLs(ctx context.Context, g *GitHubClient, repo repository.Repository, prNumber int, oldURLs map[string]bool) (*github.IssueComment, error) {
 	comments, err := gh.ListIssueComments(ctx, g, repo, prNumber)
 	if err != nil {
@@ -765,6 +780,9 @@ func findIssueCommentByURLs(ctx context.Context, g *GitHubClient, repo repositor
 // fallback when the original comment ID is no longer valid (e.g. a repository
 // migration re-assigned comment IDs). Returns (nil, nil) when no matching
 // comment exists.
+//
+// As with findIssueCommentByURLs, returning the first any-match instead of a
+// hit-count best-match is deliberate; see bodyContainsAnyURL for the rationale.
 func findReviewCommentByURLs(ctx context.Context, g *GitHubClient, repo repository.Repository, prNumber int, oldURLs map[string]bool) (*github.PullRequestComment, error) {
 	comments, err := gh.ListPullRequestReviewComments(ctx, g, repo, prNumber)
 	if err != nil {
