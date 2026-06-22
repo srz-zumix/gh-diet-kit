@@ -430,6 +430,22 @@ type RestoreOptions struct {
 	ClearCache bool
 }
 
+// CheckWriteAccess verifies that the authenticated user has write (push) access
+// to the repository, which is required to edit PR bodies and comments during a
+// restore. It returns an error when the repository cannot be read or the user
+// lacks sufficient permission.
+func CheckWriteAccess(ctx context.Context, g *GitHubClient, repo repository.Repository) error {
+	r, err := gh.GetRepository(ctx, g, repo)
+	if err != nil {
+		return fmt.Errorf("check access to repository %q: %w", repo.Owner+"/"+repo.Name, err)
+	}
+	perms := r.GetPermissions()
+	if perms.GetAdmin() || perms.GetMaintain() || perms.GetPush() {
+		return nil
+	}
+	return fmt.Errorf("write access to repository %q is required to restore PR assets", repo.Owner+"/"+repo.Name)
+}
+
 // Restore reads metadata from metaPath, uploads each local asset file to the
 // destination repository via Playwright browser automation, and updates PR
 // bodies, issue comments, and review comments by replacing old source asset
@@ -520,9 +536,51 @@ func Restore(ctx context.Context, g *GitHubClient, repo repository.Repository, i
 		logger.Info("uploaded asset", "old", a.AssetURL, "new", newURL)
 	}
 
+	// Group upload results by PR + location to minimise API calls.
+	type locKey struct {
+		PRNumber   int
+		Location   AssetLocation
+		LocationID int64
+	}
+	// Track the old asset URLs found at each location so a migrated comment can
+	// be located by content when its original ID is no longer valid.
+	locsToUpdate := make(map[locKey]map[string]bool)
+	for _, a := range meta.Assets {
+		if len(prFilter) > 0 && !prFilter[a.PRNumber] {
+			continue
+		}
+		if _, ok := urlReplacements[a.AssetURL]; !ok {
+			continue
+		}
+		key := locKey{a.PRNumber, a.Location, a.LocationID}
+		if locsToUpdate[key] == nil {
+			locsToUpdate[key] = make(map[string]bool)
+		}
+		locsToUpdate[key][a.AssetURL] = true
+	}
+
 	if opts.DryRun {
-		for oldURL, newURL := range urlReplacements {
-			logger.Info("dry-run: would replace URL", "old", oldURL, "new", newURL)
+		// Cache resolved destination location URLs to avoid duplicate API calls
+		// when several assets share the same comment.
+		dstURLCache := make(map[locKey]string)
+		for _, a := range meta.Assets {
+			if len(prFilter) > 0 && !prFilter[a.PRNumber] {
+				continue
+			}
+			newURL, ok := urlReplacements[a.AssetURL]
+			if !ok {
+				continue
+			}
+			key := locKey{a.PRNumber, a.Location, a.LocationID}
+			dstLoc, cached := dstURLCache[key]
+			if !cached {
+				dstLoc = resolveDstLocationURL(ctx, g, repo, a.PRNumber, a.Location, a.LocationID, locsToUpdate[key])
+				dstURLCache[key] = dstLoc
+			}
+			logger.Info("dry-run: would replace URL",
+				"src_location", locationURL(a.PRURL, a.Location, a.LocationID),
+				"dst_location", dstLoc,
+				"old", a.AssetURL, "new", newURL)
 		}
 		return nil
 	}
@@ -532,25 +590,8 @@ func Restore(ctx context.Context, g *GitHubClient, repo repository.Repository, i
 		return nil
 	}
 
-	// Group upload results by PR + location to minimise API calls.
-	type locKey struct {
-		PRNumber   int
-		Location   AssetLocation
-		LocationID int64
-	}
-	locsToUpdate := make(map[locKey]bool)
-	for _, a := range meta.Assets {
-		if len(prFilter) > 0 && !prFilter[a.PRNumber] {
-			continue
-		}
-		if _, ok := urlReplacements[a.AssetURL]; !ok {
-			continue
-		}
-		locsToUpdate[locKey{a.PRNumber, a.Location, a.LocationID}] = true
-	}
-
 	// Apply URL replacements to each body / comment.
-	for loc := range locsToUpdate {
+	for loc, oldURLs := range locsToUpdate {
 		switch loc.Location {
 		case LocationBody:
 			pr, fetchErr := gh.GetPullRequest(ctx, g, repo, loc.PRNumber)
@@ -571,33 +612,55 @@ func Restore(ctx context.Context, g *GitHubClient, repo repository.Repository, i
 		case LocationIssueComment:
 			comment, fetchErr := gh.GetIssueComment(ctx, g, repo, loc.LocationID)
 			if fetchErr != nil {
-				logger.Warn("failed to fetch issue comment", "id", loc.LocationID, "err", fetchErr)
-				continue
+				// The comment ID may no longer be valid (e.g. the repository was
+				// migrated and GitHub re-assigned comment IDs). Fall back to
+				// searching the PR's comments for one that contains the old URL.
+				logger.Warn("failed to fetch issue comment, searching by content", "id", loc.LocationID, "pr", loc.PRNumber, "err", fetchErr)
+				comment, fetchErr = findIssueCommentByURLs(ctx, g, repo, loc.PRNumber, oldURLs)
+				if fetchErr != nil {
+					logger.Warn("failed to search issue comment", "id", loc.LocationID, "pr", loc.PRNumber, "err", fetchErr)
+					continue
+				}
+				if comment == nil {
+					logger.Warn("issue comment not found by content", "id", loc.LocationID, "pr", loc.PRNumber)
+					continue
+				}
 			}
 			newBody := replaceURLs(comment.GetBody(), urlReplacements)
 			if newBody == comment.GetBody() {
 				continue
 			}
-			if _, updateErr := gh.EditIssueComment(ctx, g, repo, loc.LocationID, newBody); updateErr != nil {
-				logger.Warn("failed to update issue comment", "id", loc.LocationID, "err", updateErr)
+			if _, updateErr := gh.EditIssueComment(ctx, g, repo, comment, newBody); updateErr != nil {
+				logger.Warn("failed to update issue comment", "id", comment.GetID(), "err", updateErr)
 			} else {
-				logger.Info("updated issue comment", "id", loc.LocationID)
+				logger.Info("updated issue comment", "id", comment.GetID())
 			}
 
 		case LocationReviewComment:
 			comment, fetchErr := gh.GetPullRequestComment(ctx, g, repo, loc.LocationID)
 			if fetchErr != nil {
-				logger.Warn("failed to fetch review comment", "id", loc.LocationID, "err", fetchErr)
-				continue
+				// The comment ID may no longer be valid (e.g. the repository was
+				// migrated and GitHub re-assigned comment IDs). Fall back to
+				// searching the PR's comments for one that contains the old URL.
+				logger.Warn("failed to fetch review comment, searching by content", "id", loc.LocationID, "pr", loc.PRNumber, "err", fetchErr)
+				comment, fetchErr = findReviewCommentByURLs(ctx, g, repo, loc.PRNumber, oldURLs)
+				if fetchErr != nil {
+					logger.Warn("failed to search review comment", "id", loc.LocationID, "pr", loc.PRNumber, "err", fetchErr)
+					continue
+				}
+				if comment == nil {
+					logger.Warn("review comment not found by content", "id", loc.LocationID, "pr", loc.PRNumber)
+					continue
+				}
 			}
 			newBody := replaceURLs(comment.GetBody(), urlReplacements)
 			if newBody == comment.GetBody() {
 				continue
 			}
-			if _, updateErr := gh.EditPullRequestComment(ctx, g, repo, loc.LocationID, newBody); updateErr != nil {
-				logger.Warn("failed to update review comment", "id", loc.LocationID, "err", updateErr)
+			if _, updateErr := gh.EditPullRequestComment(ctx, g, repo, comment, newBody); updateErr != nil {
+				logger.Warn("failed to update review comment", "id", comment.GetID(), "err", updateErr)
 			} else {
-				logger.Info("updated review comment", "id", loc.LocationID)
+				logger.Info("updated review comment", "id", comment.GetID())
 			}
 		}
 	}
@@ -619,4 +682,99 @@ func replaceURLs(body string, replacements map[string]string) string {
 		body = strings.ReplaceAll(body, oldURL, newURL)
 	}
 	return body
+}
+
+// locationURL builds the HTML URL (with anchor) for the asset location within a
+// PR. It returns the PR URL for the body and an anchored URL for comments.
+func locationURL(prURL string, location AssetLocation, locationID int64) string {
+	switch location {
+	case LocationIssueComment:
+		return fmt.Sprintf("%s#issuecomment-%d", prURL, locationID)
+	case LocationReviewComment:
+		return fmt.Sprintf("%s#discussion_r%d", prURL, locationID)
+	default:
+		return prURL
+	}
+}
+
+// prHTMLURL builds the HTML URL of a pull request in the given repository.
+func prHTMLURL(repo repository.Repository, prNumber int) string {
+	return fmt.Sprintf("https://%s/%s/%s/pull/%d", repo.Host, repo.Owner, repo.Name, prNumber)
+}
+
+// resolveDstLocationURL resolves the destination URL that would actually be
+// edited for the given location, mirroring the fetch/search fallback used during
+// a real restore. For comments it returns the live comment HTML URL (whose ID
+// may differ from the source after a migration). It returns an empty string when
+// the destination location cannot be resolved.
+func resolveDstLocationURL(ctx context.Context, g *GitHubClient, repo repository.Repository, prNumber int, location AssetLocation, locationID int64, oldURLs map[string]bool) string {
+	switch location {
+	case LocationIssueComment:
+		comment, err := gh.GetIssueComment(ctx, g, repo, locationID)
+		if err != nil {
+			comment, err = findIssueCommentByURLs(ctx, g, repo, prNumber, oldURLs)
+			if err != nil || comment == nil {
+				return ""
+			}
+		}
+		return comment.GetHTMLURL()
+	case LocationReviewComment:
+		comment, err := gh.GetPullRequestComment(ctx, g, repo, locationID)
+		if err != nil {
+			comment, err = findReviewCommentByURLs(ctx, g, repo, prNumber, oldURLs)
+			if err != nil || comment == nil {
+				return ""
+			}
+		}
+		return comment.GetHTMLURL()
+	default:
+		return prHTMLURL(repo, prNumber)
+	}
+}
+
+// bodyContainsAnyURL reports whether body contains any of the given URLs.
+func bodyContainsAnyURL(body string, urls map[string]bool) bool {
+	for u := range urls {
+		if strings.Contains(body, u) {
+			return true
+		}
+	}
+	return false
+}
+
+// findIssueCommentByURLs lists the PR's issue comments and returns the first one
+// whose body contains any of the given old asset URLs. It is used as a fallback
+// when the original comment ID is no longer valid (e.g. a repository migration
+// re-assigned comment IDs). Returns (nil, nil) when no matching comment exists.
+func findIssueCommentByURLs(ctx context.Context, g *GitHubClient, repo repository.Repository, prNumber int, oldURLs map[string]bool) (*github.IssueComment, error) {
+	comments, err := gh.ListIssueComments(ctx, g, repo, prNumber)
+	if err != nil {
+		logger.Warn("failed to list issue comments while searching", "pr", prNumber, "err", err)
+		return nil, err
+	}
+	for _, c := range comments {
+		if bodyContainsAnyURL(c.GetBody(), oldURLs) {
+			return c, nil
+		}
+	}
+	return nil, nil
+}
+
+// findReviewCommentByURLs lists the PR's review comments and returns the first
+// one whose body contains any of the given old asset URLs. It is used as a
+// fallback when the original comment ID is no longer valid (e.g. a repository
+// migration re-assigned comment IDs). Returns (nil, nil) when no matching
+// comment exists.
+func findReviewCommentByURLs(ctx context.Context, g *GitHubClient, repo repository.Repository, prNumber int, oldURLs map[string]bool) (*github.PullRequestComment, error) {
+	comments, err := gh.ListPullRequestReviewComments(ctx, g, repo, prNumber)
+	if err != nil {
+		logger.Warn("failed to list review comments while searching", "pr", prNumber, "err", err)
+		return nil, err
+	}
+	for _, c := range comments {
+		if bodyContainsAnyURL(c.GetBody(), oldURLs) {
+			return c, nil
+		}
+	}
+	return nil, nil
 }

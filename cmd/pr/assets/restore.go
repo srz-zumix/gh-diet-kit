@@ -72,6 +72,12 @@ Example:
 				return fmt.Errorf("failed to create GitHub client: %w", err)
 			}
 
+			// Verify write access up front so the user is not prompted for a
+			// browser login only to fail when updating PRs later.
+			if err := assets.CheckWriteAccess(ctx, g, repo); err != nil {
+				return err
+			}
+
 			metaPath := metadataFileFlag
 			if metaPath == "" {
 				metaPath = filepath.Join(inputDirFlag, "metadata.json")
