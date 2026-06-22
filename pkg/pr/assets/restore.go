@@ -639,7 +639,7 @@ func Restore(ctx context.Context, g *GitHubClient, repo repository.Repository, i
 			} else {
 				// Reflect the edit in the (possibly cached) comment so a later
 				// URL-based fallback does not re-match this already-updated comment.
-				comment.Body = github.Ptr(newBody)
+				comment.Body = new(newBody)
 				logger.Info("updated issue comment", "id", comment.GetID())
 			}
 
@@ -669,7 +669,7 @@ func Restore(ctx context.Context, g *GitHubClient, repo repository.Repository, i
 			} else {
 				// Reflect the edit in the (possibly cached) comment so a later
 				// URL-based fallback does not re-match this already-updated comment.
-				comment.Body = github.Ptr(newBody)
+				comment.Body = new(newBody)
 				logger.Info("updated review comment", "id", comment.GetID())
 			}
 		}
