@@ -7,6 +7,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
+	"math/rand"
 	"mime"
 	"mime/multipart"
 	"net/http"
@@ -253,7 +254,7 @@ func (u *PlaywrightUploader) Init(ctx context.Context, stateFile, owner, repo st
 //     with proper session cookies and CSRF. ExpectResponse captures the response.
 //  2. Go net/http POST to S3 presigned URL (no auth required).
 //  3. Browser fetch() PUT to /upload/assets/{id} to confirm the upload.
-func (u *PlaywrightUploader) Upload(localPath, filename string) (string, error) {
+func (u *PlaywrightUploader) Upload(ctx context.Context, localPath, filename string) (string, error) {
 	data, err := os.ReadFile(localPath)
 	if err != nil {
 		return "", fmt.Errorf("read file %q: %w", localPath, err)
@@ -338,21 +339,17 @@ func (u *PlaywrightUploader) Upload(localPath, filename string) (string, error) 
 	if err := mw.Close(); err != nil {
 		return "", fmt.Errorf("close S3 multipart writer: %w", err)
 	}
-	s3Req, err := http.NewRequest(http.MethodPost, policy.UploadURL, &s3Buf)
-	if err != nil {
-		return "", fmt.Errorf("create S3 request: %w", err)
-	}
-	s3Req.Header.Set("Content-Type", mw.FormDataContentType())
-	s3Resp, err := httpClient.Do(s3Req)
-	if err != nil {
-		return "", fmt.Errorf("S3 upload for %q: %w", filename, err)
-	}
-	defer s3Resp.Body.Close() //nolint:errcheck
-	if s3Resp.StatusCode != http.StatusOK &&
-		s3Resp.StatusCode != http.StatusCreated &&
-		s3Resp.StatusCode != http.StatusNoContent {
-		s3Body, _ := io.ReadAll(io.LimitReader(s3Resp.Body, 4096))
-		return "", fmt.Errorf("S3 upload returned %d for %q: %s", s3Resp.StatusCode, filename, string(s3Body))
+	// Capture the encoded body and content type so the request can be safely
+	// retried (the multipart buffer is consumed once the body is read).
+	s3FormBytes := s3Buf.Bytes()
+	s3ContentType := mw.FormDataContentType()
+
+	// S3 presigned uploads occasionally fail with transient errors such as
+	// 503 SlowDown when many uploads happen in a short burst. Retry with
+	// exponential backoff (and jitter) so the whole restore does not abort on a
+	// single throttled request.
+	if err := uploadToS3WithRetry(ctx, httpClient, policy.UploadURL, s3ContentType, s3FormBytes, filename); err != nil {
+		return "", err
 	}
 
 	// Step 3: confirm the upload using the browser so session cookies are
@@ -398,6 +395,83 @@ func (u *PlaywrightUploader) Upload(localPath, filename string) (string, error) 
 	}
 
 	return policy.Asset.Href, nil
+}
+
+// maxS3UploadAttempts is the number of times an S3 presigned upload is tried
+// before giving up (1 initial attempt + retries).
+const maxS3UploadAttempts = 6
+
+// uploadToS3WithRetry POSTs the multipart form body to the S3 presigned URL,
+// retrying transient failures (network errors and retryable HTTP status codes
+// such as 503 SlowDown) with exponential backoff and jitter. The body bytes are
+// re-read on every attempt, so the caller must pass an immutable slice.
+func uploadToS3WithRetry(ctx context.Context, httpClient *http.Client, uploadURL, contentType string, body []byte, filename string) error {
+	var lastErr error
+	for attempt := 1; attempt <= maxS3UploadAttempts; attempt++ {
+		req, err := http.NewRequestWithContext(ctx, http.MethodPost, uploadURL, bytes.NewReader(body))
+		if err != nil {
+			return fmt.Errorf("create S3 request: %w", err)
+		}
+		req.Header.Set("Content-Type", contentType)
+
+		resp, err := httpClient.Do(req)
+		if err != nil {
+			// Network/transport errors are treated as transient and retried.
+			lastErr = fmt.Errorf("S3 upload for %q: %w", filename, err)
+		} else {
+			status := resp.StatusCode
+			if status == http.StatusOK || status == http.StatusCreated || status == http.StatusNoContent {
+				resp.Body.Close() //nolint:errcheck
+				return nil
+			}
+			respBody, _ := io.ReadAll(io.LimitReader(resp.Body, 4096))
+			resp.Body.Close() //nolint:errcheck
+			lastErr = fmt.Errorf("S3 upload returned %d for %q: %s", status, filename, string(respBody))
+			if !isRetryableS3Status(status) {
+				return lastErr
+			}
+		}
+
+		if attempt < maxS3UploadAttempts {
+			backoff := s3RetryBackoff(attempt)
+			logger.Warn("S3 upload failed, retrying", "file", filename, "attempt", attempt, "backoff", backoff.String(), "err", lastErr)
+			select {
+			case <-ctx.Done():
+				return ctx.Err()
+			case <-time.After(backoff):
+			}
+		}
+	}
+	return lastErr
+}
+
+// isRetryableS3Status reports whether an S3 HTTP status code is worth retrying.
+func isRetryableS3Status(status int) bool {
+	switch status {
+	case http.StatusRequestTimeout, // 408
+		http.StatusTooManyRequests,     // 429
+		http.StatusInternalServerError, // 500
+		http.StatusBadGateway,          // 502
+		http.StatusServiceUnavailable,  // 503 (SlowDown)
+		http.StatusGatewayTimeout:      // 504
+		return true
+	default:
+		return false
+	}
+}
+
+// s3RetryBackoff returns the wait duration before the given (1-based) retry
+// attempt using exponential backoff capped at 30s, plus random jitter to avoid
+// synchronized retries across concurrent uploads.
+func s3RetryBackoff(attempt int) time.Duration {
+	const base = 500 * time.Millisecond
+	const maxBackoff = 30 * time.Second
+	backoff := base << (attempt - 1)
+	if backoff > maxBackoff {
+		backoff = maxBackoff
+	}
+	jitter := time.Duration(rand.Int63n(int64(base)))
+	return backoff + jitter
 }
 
 // Close releases all Playwright resources.
@@ -526,7 +600,7 @@ func Restore(ctx context.Context, g *GitHubClient, repo repository.Repository, i
 			continue
 		}
 
-		newURL, uploadErr := uploader.Upload(localPath, a.Filename)
+		newURL, uploadErr := uploader.Upload(ctx, localPath, a.Filename)
 		if uploadErr != nil {
 			logger.Warn("upload failed, skipping", "file", localPath, "err", uploadErr)
 			continue
