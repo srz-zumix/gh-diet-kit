@@ -405,10 +405,6 @@ func (u *PlaywrightUploader) Upload(ctx context.Context, localPath, filename str
 // before giving up (1 initial attempt + retries).
 const maxS3UploadAttempts = 6
 
-func init() {
-	// Seed math/rand so backoff jitter is not deterministic across runs.
-	rand.Seed(time.Now().UnixNano())
-}
 // uploadToS3WithRetry POSTs the multipart form body to the S3 presigned URL,
 // retrying transient failures (network errors and retryable HTTP status codes
 // such as 503 SlowDown) with exponential backoff and jitter. The body bytes are
