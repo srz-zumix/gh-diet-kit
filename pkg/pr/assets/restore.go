@@ -341,6 +341,10 @@ func (u *PlaywrightUploader) Upload(ctx context.Context, localPath, filename str
 	}
 	// Capture the encoded body and content type so the request can be safely
 	// retried (the multipart buffer is consumed once the body is read).
+	// s3FormBytes aliases s3Buf's backing storage; s3Buf must not be written to
+	// after this point, and uploadToS3WithRetry only reads the slice (via
+	// bytes.NewReader) on each attempt, so the alias is safe and avoids copying
+	// a potentially multi-MB body.
 	s3FormBytes := s3Buf.Bytes()
 	s3ContentType := mw.FormDataContentType()
 
@@ -421,11 +425,11 @@ func uploadToS3WithRetry(ctx context.Context, httpClient *http.Client, uploadURL
 		} else {
 			status := resp.StatusCode
 			if status == http.StatusOK || status == http.StatusCreated || status == http.StatusNoContent {
-				resp.Body.Close() //nolint:errcheck
+				drainAndCloseBody(resp.Body)
 				return nil
 			}
 			respBody, _ := io.ReadAll(io.LimitReader(resp.Body, 4096))
-			resp.Body.Close() //nolint:errcheck
+			drainAndCloseBody(resp.Body)
 			lastErr = fmt.Errorf("S3 upload returned %d for %q: %s", status, filename, string(respBody))
 			if !isRetryableS3Status(status) {
 				return lastErr
@@ -443,6 +447,15 @@ func uploadToS3WithRetry(ctx context.Context, httpClient *http.Client, uploadURL
 		}
 	}
 	return lastErr
+}
+
+// drainAndCloseBody drains up to 1 MiB of any remaining response body and then
+// closes it. Draining lets the underlying keep-alive connection be reused for
+// subsequent uploads/retries; the cap avoids spending unbounded time or memory
+// on an unexpectedly large body.
+func drainAndCloseBody(body io.ReadCloser) {
+	_, _ = io.Copy(io.Discard, io.LimitReader(body, 1<<20))
+	body.Close() //nolint:errcheck
 }
 
 // isRetryableS3Status reports whether an S3 HTTP status code is worth retrying.
