@@ -257,7 +257,7 @@ Read the `metadata.json` produced by `pr assets dump`, upload each local asset f
 
 On the first run a browser window is opened so you can log in to GitHub interactively. The session is persisted to the `--browser-state` file for headless operation on subsequent runs.
 
-The default `--upload-delay` of `1s` keeps uploads under GitHub's per-minute secondary rate limit (about 80 content-generating requests per minute). When restoring **more than 500 assets**, the per-hour limit (500 content-generating requests per hour, i.e. roughly one every 7.2 seconds) also applies; set `--upload-delay 8s` or higher to stay under it.
+The default `--upload-delay` of `1s` keeps uploads under GitHub's per-minute secondary rate limit (about 80 content-generating requests per minute). When restoring **500+ assets**, the per-hour limit (500 content-generating requests per hour, i.e. roughly one every 7.2 seconds) also applies; set `--upload-delay 8s` or higher to stay under it.
 
 ```sh
 gh diet-kit pr assets restore [flags]
