@@ -272,6 +272,7 @@ gh diet-kit pr assets restore [flags]
 | `--metadata-file` | | `<input-dir>/metadata.json` | Path to the metadata JSON file |
 | `--pr` | | all PRs | PR numbers to restore (repeatable) |
 | `--repo` | `-R` | current repository | Destination repository in `[HOST/]OWNER/REPO` format |
+| `--upload-delay` | | `2s` | Minimum delay between asset uploads to avoid GitHub's secondary rate limit |
 
 #### tree detect
 

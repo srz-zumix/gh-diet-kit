@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"time"
 
 	"github.com/spf13/cobra"
 	"github.com/srz-zumix/gh-diet-kit/pkg/pr/assets"
@@ -24,6 +25,7 @@ func NewRestoreCmd() *cobra.Command {
 	var headedFlag bool
 	var clearCacheFlag bool
 	var clearCacheOnlyFlag bool
+	var uploadDelayFlag time.Duration
 
 	cmd := &cobra.Command{
 		Use:   "restore",
@@ -88,11 +90,12 @@ Example:
 			}
 
 			opts := assets.RestoreOptions{
-				PRNumbers:  prFlag,
-				DryRun:     dryRunFlag,
-				StateFile:  stateFile,
-				Headed:     headedFlag,
-				ClearCache: clearCacheFlag,
+				PRNumbers:   prFlag,
+				DryRun:      dryRunFlag,
+				StateFile:   stateFile,
+				Headed:      headedFlag,
+				ClearCache:  clearCacheFlag,
+				UploadDelay: uploadDelayFlag,
 			}
 
 			if err := assets.Restore(ctx, g, repo, inputDirFlag, metaPath, opts); err != nil {
@@ -112,6 +115,7 @@ Example:
 	cmd.Flags().BoolVar(&headedFlag, "headed", false, "Run browser in headed (visible) mode even when a saved session exists (useful for debugging)")
 	cmd.Flags().BoolVar(&clearCacheFlag, "clear-cache", false, "Delete the saved browser session after the restore completes")
 	cmd.Flags().BoolVar(&clearCacheOnlyFlag, "clear-cache-only", false, "Delete the saved browser session and exit without restoring")
+	cmd.Flags().DurationVar(&uploadDelayFlag, "upload-delay", 2*time.Second, "Minimum delay between asset uploads to avoid GitHub's secondary rate limit")
 
 	return cmd
 }

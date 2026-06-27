@@ -14,6 +14,7 @@ import (
 	"net/url"
 	"os"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"time"
 
@@ -268,54 +269,57 @@ func (u *PlaywrightUploader) Upload(ctx context.Context, localPath, filename str
 	// Base64-encode so the file bytes survive the Go→JS boundary in Evaluate.
 	b64 := base64.StdEncoding.EncodeToString(data)
 
-	// Step 1: let the browser make the authenticated policy request.
-	// ExpectResponse registers the listener BEFORE the drag-drop fires so there
-	// is no race. The browser carries the correct session cookies and CSRF token,
-	// sidestepping any server-side origin/CSRF validation that rejects Go HTTP.
-	policyResp, err := u.page.ExpectResponse(
-		func(rawURL string) bool {
-			return strings.Contains(rawURL, "/upload/policies/assets")
-		},
-		func() error {
-			_, evalErr := u.page.Evaluate(`
-				([b64, fname, ctype]) => {
-					const binary = atob(b64);
-					const bytes = new Uint8Array(binary.length);
-					for (let i = 0; i < binary.length; i++) bytes[i] = binary.charCodeAt(i);
-					const file = new File([bytes], fname, {type: ctype});
-					const dt = new DataTransfer();
-					dt.items.add(file);
-					// Target the Primer React textarea; fall back broadly.
-					const el = document.querySelector('.prc-Textarea-TextArea-snlco') ||
-						document.querySelector('file-attachment') ||
-						document.querySelector('textarea');
-					if (!el) return;
-					el.dispatchEvent(new DragEvent('dragenter', {dataTransfer: dt, bubbles: true}));
-					el.dispatchEvent(new DragEvent('dragover',  {dataTransfer: dt, bubbles: true, cancelable: true}));
-					el.dispatchEvent(new DragEvent('drop',      {dataTransfer: dt, bubbles: true, cancelable: true}));
-				}
-			`, []interface{}{b64, filename, contentType})
-			return evalErr
-		},
-		playwright.PageExpectResponseOptions{Timeout: playwright.Float(30000)},
-	)
-	if err != nil {
-		return "", fmt.Errorf("upload policy request for %q: %w", filename, err)
-	}
-	policyBody, err := policyResp.Body()
-	if err != nil {
-		return "", fmt.Errorf("read upload policy body for %q: %w", filename, err)
-	}
-	if policyResp.Status() != http.StatusOK && policyResp.Status() != http.StatusCreated {
-		return "", fmt.Errorf("upload policy returned %d for %q: %s", policyResp.Status(), filename, string(policyBody))
-	}
-
+	// Step 1: let the browser make the authenticated policy request, retrying
+	// when GitHub responds with a secondary rate limit (429/403). These limits
+	// require waiting (often a minute or more), so honor any Retry-After header
+	// and otherwise back off with an increasing delay.
 	var policy uploadPolicy
-	if err := json.Unmarshal(policyBody, &policy); err != nil {
-		return "", fmt.Errorf("parse upload policy for %q: %w", filename, err)
+	var lastPolicyErr error
+	for attempt := 1; attempt <= maxPolicyAttempts; attempt++ {
+		policyResp, reqErr := u.dispatchUploadPolicy(b64, filename, contentType)
+		if reqErr != nil {
+			return "", fmt.Errorf("upload policy request for %q: %w", filename, reqErr)
+		}
+
+		status := policyResp.Status()
+		if status == http.StatusOK || status == http.StatusCreated {
+			policyBody, bodyErr := policyResp.Body()
+			if bodyErr != nil {
+				return "", fmt.Errorf("read upload policy body for %q: %w", filename, bodyErr)
+			}
+			if err := json.Unmarshal(policyBody, &policy); err != nil {
+				return "", fmt.Errorf("parse upload policy for %q: %w", filename, err)
+			}
+			if policy.Asset.Href == "" {
+				return "", fmt.Errorf("upload policy missing asset href for %q", filename)
+			}
+			lastPolicyErr = nil
+			break
+		}
+
+		policyBody, _ := policyResp.Body()
+		policyMsg := string(policyBody)
+		if len(policyMsg) > 4096 {
+			policyMsg = policyMsg[:4096] + "...(truncated)"
+		}
+		lastPolicyErr = fmt.Errorf("upload policy returned %d for %q: %s", status, filename, policyMsg)
+		if !isRateLimitStatus(status) {
+			return "", lastPolicyErr
+		}
+		if attempt == maxPolicyAttempts {
+			break
+		}
+		wait := retryAfterDelay(policyResp, policyRateLimitBackoff(attempt))
+		logger.Warn("upload policy rate-limited, backing off",
+			"file", filename, "status", status, "attempt", attempt, "wait", wait.String())
+		select {
+		case <-ctx.Done():
+			return "", ctx.Err()
+		case <-time.After(wait):
+		}
 	}
-	if policy.Asset.Href == "" {
-		return "", fmt.Errorf("upload policy missing asset href for %q", filename)
+	if lastPolicyErr != nil {
+		return "", lastPolicyErr
 	}
 
 	httpClient := &http.Client{Timeout: 5 * time.Minute}
@@ -405,6 +409,86 @@ func (u *PlaywrightUploader) Upload(ctx context.Context, localPath, filename str
 // before giving up (1 initial attempt + retries).
 const maxS3UploadAttempts = 6
 
+// Upload policy (GitHub secondary rate limit) retry settings.
+const (
+	// maxPolicyAttempts is the number of times the upload-policy request is tried
+	// before giving up when GitHub returns a secondary rate limit.
+	maxPolicyAttempts = 5
+	// policyRateLimitBaseDelay is the initial backoff for secondary rate limits.
+	// GitHub's "you have exceeded a secondary rate limit" page asks callers to
+	// wait at least a minute, so start high.
+	policyRateLimitBaseDelay = 60 * time.Second
+	// policyRateLimitMaxDelay caps the secondary rate limit backoff.
+	policyRateLimitMaxDelay = 5 * time.Minute
+)
+
+// dispatchUploadPolicy fires the browser drag-drop that triggers the
+// /upload/policies/assets request and returns the captured response.
+//
+// ExpectResponse registers the listener BEFORE the drag-drop fires so there is
+// no race. The browser carries the correct session cookies and CSRF token,
+// sidestepping any server-side origin/CSRF validation that rejects Go HTTP.
+func (u *PlaywrightUploader) dispatchUploadPolicy(b64, filename, contentType string) (playwright.Response, error) {
+	return u.page.ExpectResponse(
+		func(rawURL string) bool {
+			return strings.Contains(rawURL, "/upload/policies/assets")
+		},
+		func() error {
+			_, evalErr := u.page.Evaluate(`
+				([b64, fname, ctype]) => {
+					const binary = atob(b64);
+					const bytes = new Uint8Array(binary.length);
+					for (let i = 0; i < binary.length; i++) bytes[i] = binary.charCodeAt(i);
+					const file = new File([bytes], fname, {type: ctype});
+					const dt = new DataTransfer();
+					dt.items.add(file);
+					// Target the Primer React textarea; fall back broadly.
+					const el = document.querySelector('.prc-Textarea-TextArea-snlco') ||
+						document.querySelector('file-attachment') ||
+						document.querySelector('textarea');
+					if (!el) return;
+					el.dispatchEvent(new DragEvent('dragenter', {dataTransfer: dt, bubbles: true}));
+					el.dispatchEvent(new DragEvent('dragover',  {dataTransfer: dt, bubbles: true, cancelable: true}));
+					el.dispatchEvent(new DragEvent('drop',      {dataTransfer: dt, bubbles: true, cancelable: true}));
+				}
+			`, []interface{}{b64, filename, contentType})
+			return evalErr
+		},
+		playwright.PageExpectResponseOptions{Timeout: playwright.Float(30000)},
+	)
+}
+
+// isRateLimitStatus reports whether an HTTP status indicates a GitHub rate limit
+// (primary or secondary).
+func isRateLimitStatus(status int) bool {
+	return status == http.StatusTooManyRequests || status == http.StatusForbidden
+}
+
+// retryAfterDelay returns the wait duration before retrying a rate-limited
+// request. It honors a Retry-After header (in seconds) when present, otherwise
+// falls back to the provided default.
+func retryAfterDelay(resp playwright.Response, fallback time.Duration) time.Duration {
+	if resp == nil {
+		return fallback
+	}
+	v, err := resp.HeaderValue("retry-after")
+	if err != nil || v == "" {
+		return fallback
+	}
+	if secs, perr := strconv.Atoi(strings.TrimSpace(v)); perr == nil && secs > 0 {
+		return time.Duration(secs) * time.Second
+	}
+	return fallback
+}
+
+// policyRateLimitBackoff returns the exponential backoff (with jitter) for the
+// given (1-based) secondary rate limit retry attempt, capped at the maximum.
+func policyRateLimitBackoff(attempt int) time.Duration {
+	backoff := min(policyRateLimitBaseDelay<<(attempt-1), policyRateLimitMaxDelay)
+	jitter := time.Duration(rand.Int63n(int64(time.Second)))
+	return backoff + jitter
+}
+
 // uploadToS3WithRetry POSTs the multipart form body to the S3 presigned URL,
 // retrying transient failures (network errors and retryable HTTP status codes
 // such as 503 SlowDown) with exponential backoff and jitter. The body bytes are
@@ -474,16 +558,13 @@ func isRetryableS3Status(status int) bool {
 }
 
 // s3RetryBackoff returns the wait duration before the given (1-based) retry
-// attempt using exponential backoff capped at 30s, plus random jitter to avoid
+// attempt using exponential backoff capped at 60s, plus random jitter to avoid
 // synchronized retries across concurrent uploads.
 func s3RetryBackoff(attempt int) time.Duration {
-	const base = 500 * time.Millisecond
-	const maxBackoff = 30 * time.Second
-	backoff := base << (attempt - 1)
-	if backoff > maxBackoff {
-		backoff = maxBackoff
-	}
-	jitter := time.Duration(rand.Int63n(int64(base)))
+	const base = 2 * time.Second
+	const maxBackoff = 60 * time.Second
+	backoff := min(base<<(attempt-1), maxBackoff)
+	jitter := time.Duration(rand.Int63n(int64(time.Second)))
 	return backoff + jitter
 }
 
@@ -515,7 +596,15 @@ type RestoreOptions struct {
 	// ClearCache deletes the saved browser session file after the restore
 	// completes successfully.
 	ClearCache bool
+	// UploadDelay is the minimum delay inserted before each asset upload to
+	// pace requests and avoid tripping GitHub's secondary rate limit. Zero uses
+	// defaultUploadDelay.
+	UploadDelay time.Duration
 }
+
+// defaultUploadDelay paces asset uploads to stay under GitHub's secondary rate
+// limit for content creation. Uploads are otherwise fast enough to trip it.
+const defaultUploadDelay = 2 * time.Second
 
 // CheckWriteAccess verifies that the authenticated user has write (push) access
 // to the repository, which is required to edit PR bodies and comments during a
@@ -570,6 +659,14 @@ func Restore(ctx context.Context, g *GitHubClient, repo repository.Repository, i
 		prFilter[n] = true
 	}
 
+	// Pace uploads to avoid GitHub's secondary rate limit. lastUploadAt tracks
+	// the previous upload so the loop can enforce a minimum gap.
+	uploadDelay := opts.UploadDelay
+	if uploadDelay <= 0 {
+		uploadDelay = defaultUploadDelay
+	}
+	var lastUploadAt time.Time
+
 	// Build URL replacement map: old asset URL → new CDN URL.
 	urlReplacements := make(map[string]string)
 	for _, a := range meta.Assets {
@@ -613,7 +710,19 @@ func Restore(ctx context.Context, g *GitHubClient, repo repository.Repository, i
 			continue
 		}
 
+		// Pace uploads to avoid tripping GitHub's secondary rate limit.
+		if !lastUploadAt.IsZero() {
+			if wait := uploadDelay - time.Since(lastUploadAt); wait > 0 {
+				select {
+				case <-ctx.Done():
+					return ctx.Err()
+				case <-time.After(wait):
+				}
+			}
+		}
+
 		newURL, uploadErr := uploader.Upload(ctx, localPath, a.Filename)
+		lastUploadAt = time.Now()
 		if uploadErr != nil {
 			logger.Warn("upload failed, skipping", "file", localPath, "err", uploadErr)
 			continue
