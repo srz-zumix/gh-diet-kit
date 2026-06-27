@@ -298,7 +298,11 @@ func (u *PlaywrightUploader) Upload(ctx context.Context, localPath, filename str
 		}
 
 		policyBody, _ := policyResp.Body()
-		lastPolicyErr = fmt.Errorf("upload policy returned %d for %q: %s", status, filename, string(policyBody))
+		policyMsg := string(policyBody)
+		if len(policyMsg) > 4096 {
+			policyMsg = policyMsg[:4096] + "...(truncated)"
+		}
+		lastPolicyErr = fmt.Errorf("upload policy returned %d for %q: %s", status, filename, policyMsg)
 		if !isRateLimitStatus(status) {
 			return "", lastPolicyErr
 		}
