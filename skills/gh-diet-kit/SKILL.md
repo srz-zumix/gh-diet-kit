@@ -281,7 +281,7 @@ commands:
         description: Format JSON output using a Go template
 
   - name: gh diet-kit pr assets restore
-    description: Read the metadata.json produced by "pr assets dump", upload each local asset file to the destination repository using Playwright browser automation, and replace the old source asset URLs with the new destination CDN URLs in PR bodies, issue comments, and review comments. On the first run a browser window opens for interactive GitHub login; the session is saved to --browser-state for headless operation on subsequent runs. The default --upload-delay of 1s keeps uploads under GitHub's per-minute secondary rate limit (~80 content-generating requests/minute); when restoring more than 500 assets, the per-hour limit (500 requests/hour, ~1 every 7.2s) also applies, so set --upload-delay 8s or higher.
+    description: Read the metadata.json produced by "pr assets dump", upload each local asset file to the destination repository using Playwright browser automation, and replace the old source asset URLs with the new destination CDN URLs in PR bodies, issue comments, and review comments. On the first run a browser window opens for interactive GitHub login; the session is saved to --browser-state for headless operation on subsequent runs. The default --upload-delay of 1s keeps uploads under GitHub's per-minute secondary rate limit (~80 content-generating requests/minute); when restoring 500+ assets, the per-hour limit (500 requests/hour, ~1 every 7.2s) also applies, so set --upload-delay 8s or higher.
     usage: gh diet-kit pr assets restore [flags]
     flags:
       - name: --browser-state
