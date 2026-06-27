@@ -304,6 +304,8 @@ commands:
       - name: --repo
         shorthand: -R
         description: Destination repository in "[HOST/]OWNER/REPO" format (default current repository)
+      - name: --upload-delay
+        description: Minimum delay between asset uploads to avoid GitHub's secondary rate limit (default 2s)
 
 ---
 
