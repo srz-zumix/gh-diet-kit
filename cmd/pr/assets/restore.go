@@ -115,7 +115,7 @@ Example:
 	cmd.Flags().BoolVar(&headedFlag, "headed", false, "Run browser in headed (visible) mode even when a saved session exists (useful for debugging)")
 	cmd.Flags().BoolVar(&clearCacheFlag, "clear-cache", false, "Delete the saved browser session after the restore completes")
 	cmd.Flags().BoolVar(&clearCacheOnlyFlag, "clear-cache-only", false, "Delete the saved browser session and exit without restoring")
-	cmd.Flags().DurationVar(&uploadDelayFlag, "upload-delay", 2*time.Second, "Minimum delay between asset uploads to avoid GitHub's secondary rate limit")
+	cmd.Flags().DurationVar(&uploadDelayFlag, "upload-delay", 1*time.Second, "Minimum delay between asset uploads to avoid GitHub's secondary rate limit")
 
 	return cmd
 }

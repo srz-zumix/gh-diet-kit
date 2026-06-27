@@ -603,8 +603,9 @@ type RestoreOptions struct {
 }
 
 // defaultUploadDelay paces asset uploads to stay under GitHub's secondary rate
-// limit for content creation. Uploads are otherwise fast enough to trip it.
-const defaultUploadDelay = 2 * time.Second
+// limit for content creation (max ~80 content-generating requests per minute,
+// i.e. roughly one every 0.75s). Uploads are otherwise fast enough to trip it.
+const defaultUploadDelay = 1 * time.Second
 
 // CheckWriteAccess verifies that the authenticated user has write (push) access
 // to the repository, which is required to edit PR bodies and comments during a
