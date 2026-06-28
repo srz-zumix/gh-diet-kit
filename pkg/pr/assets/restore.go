@@ -598,13 +598,14 @@ type RestoreOptions struct {
 	ClearCache bool
 	// UploadDelay is the minimum delay inserted before each asset upload to
 	// pace requests and avoid tripping GitHub's secondary rate limit. Zero uses
-	// defaultUploadDelay.
+	// DefaultUploadDelay.
 	UploadDelay time.Duration
 }
 
-// defaultUploadDelay paces asset uploads to stay under GitHub's secondary rate
-// limit for content creation. Uploads are otherwise fast enough to trip it.
-const defaultUploadDelay = 2 * time.Second
+// DefaultUploadDelay paces asset uploads to stay under GitHub's secondary rate
+// limit for content creation (max ~80 content-generating requests per minute,
+// i.e. roughly one every 0.75s). Uploads are otherwise fast enough to trip it.
+const DefaultUploadDelay = 1 * time.Second
 
 // CheckWriteAccess verifies that the authenticated user has write (push) access
 // to the repository, which is required to edit PR bodies and comments during a
@@ -663,7 +664,7 @@ func Restore(ctx context.Context, g *GitHubClient, repo repository.Repository, i
 	// the previous upload so the loop can enforce a minimum gap.
 	uploadDelay := opts.UploadDelay
 	if uploadDelay <= 0 {
-		uploadDelay = defaultUploadDelay
+		uploadDelay = DefaultUploadDelay
 	}
 	var lastUploadAt time.Time
 

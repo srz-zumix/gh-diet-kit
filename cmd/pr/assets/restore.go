@@ -106,16 +106,17 @@ Example:
 		},
 	}
 
-	cmd.Flags().StringVarP(&repoFlag, "repo", "R", "", "Repository in \"[HOST/]OWNER/REPO\" format (default: current repository)")
-	cmd.Flags().StringVar(&inputDirFlag, "input-dir", "./pr-assets", "Directory containing the downloaded asset files")
-	cmd.Flags().StringVar(&metadataFileFlag, "metadata-file", "", "Path to metadata.json (default: <input-dir>/metadata.json)")
-	cmd.Flags().IntSliceVar(&prFlag, "pr", nil, "PR numbers to restore (repeatable; default: all PRs)")
-	cmd.Flags().BoolVarP(&dryRunFlag, "dryrun", "n", false, "Preview uploads and replacements without making any changes")
-	cmd.Flags().StringVar(&browserStateFlag, "browser-state", "", "Path to the Playwright browser state file for session persistence (default: <user-config-dir>/gh-diet-kit/playwright-state.json)")
-	cmd.Flags().BoolVar(&headedFlag, "headed", false, "Run browser in headed (visible) mode even when a saved session exists (useful for debugging)")
-	cmd.Flags().BoolVar(&clearCacheFlag, "clear-cache", false, "Delete the saved browser session after the restore completes")
-	cmd.Flags().BoolVar(&clearCacheOnlyFlag, "clear-cache-only", false, "Delete the saved browser session and exit without restoring")
-	cmd.Flags().DurationVar(&uploadDelayFlag, "upload-delay", 2*time.Second, "Minimum delay between asset uploads to avoid GitHub's secondary rate limit")
+	f := cmd.Flags()
+	f.StringVarP(&repoFlag, "repo", "R", "", "Repository in \"[HOST/]OWNER/REPO\" format (default: current repository)")
+	f.StringVar(&inputDirFlag, "input-dir", "./pr-assets", "Directory containing the downloaded asset files")
+	f.StringVar(&metadataFileFlag, "metadata-file", "", "Path to metadata.json (default: <input-dir>/metadata.json)")
+	f.IntSliceVar(&prFlag, "pr", nil, "PR numbers to restore (repeatable; default: all PRs)")
+	f.BoolVarP(&dryRunFlag, "dryrun", "n", false, "Preview uploads and replacements without making any changes")
+	f.StringVar(&browserStateFlag, "browser-state", "", "Path to the Playwright browser state file for session persistence (default: <user-config-dir>/gh-diet-kit/playwright-state.json)")
+	f.BoolVar(&headedFlag, "headed", false, "Run browser in headed (visible) mode even when a saved session exists (useful for debugging)")
+	f.BoolVar(&clearCacheFlag, "clear-cache", false, "Delete the saved browser session after the restore completes")
+	f.BoolVar(&clearCacheOnlyFlag, "clear-cache-only", false, "Delete the saved browser session and exit without restoring")
+	f.DurationVar(&uploadDelayFlag, "upload-delay", assets.DefaultUploadDelay, "Minimum delay between asset uploads to avoid GitHub's secondary rate limit")
 
 	return cmd
 }
