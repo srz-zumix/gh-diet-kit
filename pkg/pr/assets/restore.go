@@ -640,6 +640,59 @@ func Restore(ctx context.Context, g *GitHubClient, repo repository.Repository, i
 
 	owner, repoName := repo.Owner, repo.Name
 
+	// Build a set of PR numbers to process for quick lookup.
+	prFilter := make(map[int]bool, len(opts.PRNumbers))
+	for _, n := range opts.PRNumbers {
+		prFilter[n] = true
+	}
+
+	type locKey struct {
+		PRNumber   int
+		Location   AssetLocation
+		LocationID int64
+	}
+
+	// Track the old asset URLs found at each location so a migrated comment can
+	// be located by content when its original ID is no longer valid.
+	locsByKey := make(map[locKey]map[string]bool)
+	for _, a := range meta.Assets {
+		if len(prFilter) > 0 && !prFilter[a.PRNumber] {
+			continue
+		}
+		key := locKey{a.PRNumber, a.Location, a.LocationID}
+		if locsByKey[key] == nil {
+			locsByKey[key] = make(map[string]bool)
+		}
+		locsByKey[key][a.AssetURL] = true
+	}
+
+	// Cache PR comments so URL-based fallback lookups list each PR's comments at
+	// most once across the whole restore run (avoids an N+1 listing pattern).
+	cache := newCommentCache(g, repo)
+
+	// Only upload assets whose source URLs still exist in the destination body or
+	// comment that will be updated. This avoids uploading assets that have no
+	// replacement target.
+	restoreURLs := make(map[string]bool)
+	for loc, oldURLs := range locsByKey {
+		body, bodyErr := resolveDstLocationBody(ctx, g, repo, cache, loc.PRNumber, loc.Location, loc.LocationID, oldURLs)
+		if bodyErr != nil {
+			logger.Warn("failed to resolve restore target, skipping uploads for location",
+				"pr", loc.PRNumber, "location", loc.Location, "id", loc.LocationID, "err", bodyErr)
+			continue
+		}
+		for oldURL := range oldURLs {
+			if strings.Contains(body, oldURL) {
+				restoreURLs[oldURL] = true
+			}
+		}
+	}
+
+	if len(restoreURLs) == 0 {
+		logger.Info("no asset links matched destination content")
+		return nil
+	}
+
 	// Initialize the Playwright uploader (unless dry-run).
 	var uploader *PlaywrightUploader
 	if !opts.DryRun {
@@ -652,12 +705,6 @@ func Restore(ctx context.Context, g *GitHubClient, repo repository.Repository, i
 		if err := uploader.Init(ctx, opts.StateFile, owner, repoName, opts.Headed); err != nil {
 			return fmt.Errorf("initialize browser session: %w", err)
 		}
-	}
-
-	// Build a set of PR numbers to process for quick lookup.
-	prFilter := make(map[int]bool, len(opts.PRNumbers))
-	for _, n := range opts.PRNumbers {
-		prFilter[n] = true
 	}
 
 	// Pace uploads to avoid GitHub's secondary rate limit. lastUploadAt tracks
@@ -675,6 +722,9 @@ func Restore(ctx context.Context, g *GitHubClient, repo repository.Repository, i
 			return err
 		}
 		if len(prFilter) > 0 && !prFilter[a.PRNumber] {
+			continue
+		}
+		if !restoreURLs[a.AssetURL] {
 			continue
 		}
 		if a.LocalFile == "" {
@@ -732,13 +782,12 @@ func Restore(ctx context.Context, g *GitHubClient, repo repository.Repository, i
 		urlReplacements[a.AssetURL] = newURL
 		logger.Info("uploaded asset", "old", a.AssetURL, "new", newURL)
 	}
+	if len(urlReplacements) == 0 {
+		logger.Info("no assets were successfully uploaded")
+		return nil
+	}
 
 	// Group upload results by PR + location to minimise API calls.
-	type locKey struct {
-		PRNumber   int
-		Location   AssetLocation
-		LocationID int64
-	}
 	// Track the old asset URLs found at each location so a migrated comment can
 	// be located by content when its original ID is no longer valid.
 	locsToUpdate := make(map[locKey]map[string]bool)
@@ -755,10 +804,6 @@ func Restore(ctx context.Context, g *GitHubClient, repo repository.Repository, i
 		}
 		locsToUpdate[key][a.AssetURL] = true
 	}
-
-	// Cache PR comments so URL-based fallback lookups list each PR's comments at
-	// most once across the whole restore run (avoids an N+1 listing pattern).
-	cache := newCommentCache(g, repo)
 
 	if opts.DryRun {
 		// Cache resolved destination location URLs to avoid duplicate API calls
@@ -783,11 +828,6 @@ func Restore(ctx context.Context, g *GitHubClient, repo repository.Repository, i
 				"dst_location", dstLoc,
 				"old", a.AssetURL, "new", newURL)
 		}
-		return nil
-	}
-
-	if len(urlReplacements) == 0 {
-		logger.Info("no assets were successfully uploaded")
 		return nil
 	}
 
@@ -936,6 +976,44 @@ func resolveDstLocationURL(ctx context.Context, g *GitHubClient, repo repository
 		return comment.GetHTMLURL()
 	default:
 		return prHTMLURL(repo, prNumber)
+	}
+}
+
+// resolveDstLocationBody resolves the destination body or comment text for the
+// given location, using the same ID lookup and content-based fallback as the
+// update step.
+func resolveDstLocationBody(ctx context.Context, g *GitHubClient, repo repository.Repository, cache *commentCache, prNumber int, location AssetLocation, locationID int64, oldURLs map[string]bool) (string, error) {
+	switch location {
+	case LocationIssueComment:
+		comment, err := gh.GetIssueComment(ctx, g, repo, locationID)
+		if err != nil {
+			comment, err = findIssueCommentByURLs(ctx, cache, prNumber, oldURLs)
+			if err != nil {
+				return "", err
+			}
+			if comment == nil {
+				return "", fmt.Errorf("destination issue comment not found")
+			}
+		}
+		return comment.GetBody(), nil
+	case LocationReviewComment:
+		comment, err := gh.GetPullRequestComment(ctx, g, repo, locationID)
+		if err != nil {
+			comment, err = findReviewCommentByURLs(ctx, cache, prNumber, oldURLs)
+			if err != nil {
+				return "", err
+			}
+			if comment == nil {
+				return "", fmt.Errorf("destination review comment not found")
+			}
+		}
+		return comment.GetBody(), nil
+	default:
+		pr, err := gh.GetPullRequest(ctx, g, repo, prNumber)
+		if err != nil {
+			return "", err
+		}
+		return pr.GetBody(), nil
 	}
 }
 
