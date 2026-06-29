@@ -3,12 +3,10 @@ package assets
 import (
 	"bytes"
 	"context"
-	"encoding/base64"
 	"encoding/json"
 	"fmt"
 	"io"
 	"math/rand"
-	"mime"
 	"mime/multipart"
 	"net/http"
 	"net/url"
@@ -45,7 +43,30 @@ type PlaywrightUploader struct {
 	page    playwright.Page
 	host    string
 	scheme  string
+	// headless and stateFile are retained so the session can be rebuilt by
+	// Recover after the renderer/browser crashes mid-restore.
+	headless  bool
+	stateFile string
 }
+
+// uploadUserAgent is a realistic desktop Chrome User-Agent so GitHub serves the
+// full interactive page (with the markdown editor) rather than a bot-detection
+// fallback.
+const uploadUserAgent = "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) " +
+	"AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36"
+
+// uploaderInputID is the id of a hidden <input type="file"> that this tool
+// injects into the page. Files are streamed into it with Playwright's
+// set_input_files, which makes Chromium read the bytes directly from disk. This
+// avoids marshalling the whole file as base64 through the JS heap (which crashes
+// the renderer on large videos and breaks every subsequent upload).
+const uploaderInputID = "gh-diet-kit-file-input"
+
+// uploadPolicyTimeout bounds how long we wait for GitHub's /upload/policies/assets
+// response after dispatching the drop. The policy response only returns presigned
+// S3 metadata (the bytes go to S3 separately), so it is fast regardless of file
+// size; the timeout mainly guards against a hung page.
+const uploadPolicyTimeout = 60 * time.Second
 
 // NewPlaywrightUploader creates a new PlaywrightUploader and launches a browser.
 // If stateFile does not exist, the browser is launched in headed mode so the user
@@ -87,10 +108,8 @@ func NewPlaywrightUploader(stateFile, host string, forceHeaded bool) (*Playwrigh
 
 	// Use a realistic User-Agent so GitHub serves the full interactive page
 	// rather than a bot-detection fallback without the markdown editor.
-	const userAgent = "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) " +
-		"AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36"
 	ctxOpts := playwright.BrowserNewContextOptions{
-		UserAgent: playwright.String(userAgent),
+		UserAgent: playwright.String(uploadUserAgent),
 	}
 	if sessionExists {
 		ctxOpts.StorageStatePath = playwright.String(stateFile)
@@ -112,12 +131,14 @@ func NewPlaywrightUploader(stateFile, host string, forceHeaded bool) (*Playwrigh
 	}
 
 	return &PlaywrightUploader{
-		pw:      pw,
-		browser: browser,
-		bctx:    bctx,
-		page:    page,
-		host:    host,
-		scheme:  "https",
+		pw:        pw,
+		browser:   browser,
+		bctx:      bctx,
+		page:      page,
+		host:      host,
+		scheme:    "https",
+		headless:  headless,
+		stateFile: stateFile,
 	}, nil
 }
 
@@ -251,8 +272,12 @@ func (u *PlaywrightUploader) Init(ctx context.Context, stateFile, owner, repo st
 // Upload uploads the file at localPath to GitHub and returns the new CDN URL.
 //
 // Upload pipeline:
-//  1. Playwright drag-drop event → browser sends POST /upload/policies/assets
-//     with proper session cookies and CSRF. ExpectResponse captures the response.
+//  1. Playwright streams the file from disk into a hidden <input type="file">
+//     (set_input_files) and dispatches a drag-drop built from that input, so the
+//     browser sends POST /upload/policies/assets with proper session cookies and
+//     CSRF. ExpectResponse captures the response. Streaming from disk avoids
+//     loading the whole file into the JS heap, which crashes the renderer on
+//     large videos.
 //  2. Go net/http POST to S3 presigned URL (no auth required).
 //  3. Browser fetch() PUT to /upload/assets/{id} to confirm the upload.
 func (u *PlaywrightUploader) Upload(ctx context.Context, localPath, filename string) (string, error) {
@@ -260,14 +285,6 @@ func (u *PlaywrightUploader) Upload(ctx context.Context, localPath, filename str
 	if err != nil {
 		return "", fmt.Errorf("read file %q: %w", localPath, err)
 	}
-
-	contentType := mime.TypeByExtension(filepath.Ext(filename))
-	if contentType == "" {
-		contentType = "application/octet-stream"
-	}
-
-	// Base64-encode so the file bytes survive the Go→JS boundary in Evaluate.
-	b64 := base64.StdEncoding.EncodeToString(data)
 
 	// Step 1: let the browser make the authenticated policy request, retrying
 	// when GitHub responds with a secondary rate limit (429/403). Asset uploads
@@ -277,7 +294,7 @@ func (u *PlaywrightUploader) Upload(ctx context.Context, localPath, filename str
 	var policy uploadPolicy
 	var lastPolicyErr error
 	for attempt := 1; attempt <= maxPolicyAttempts; attempt++ {
-		policyResp, reqErr := u.dispatchUploadPolicy(b64, filename, contentType)
+		policyResp, reqErr := u.dispatchUploadPolicy(localPath, filename)
 		if reqErr != nil {
 			return "", fmt.Errorf("upload policy request for %q: %w", filename, reqErr)
 		}
@@ -476,26 +493,60 @@ const (
 	maxRateLimitWait = 65 * time.Minute
 )
 
-// dispatchUploadPolicy fires the browser drag-drop that triggers the
-// /upload/policies/assets request and returns the captured response.
+// ensureFileInput injects a hidden <input type="file"> (id uploaderInputID) into
+// the page if one is not already present. Playwright streams files into this
+// input with set_input_files, which makes Chromium read the bytes directly from
+// disk rather than receiving them as a base64 string in the JS heap. The input
+// lives in document.body (outside GitHub's file-attachment element) so loading a
+// file into it does not itself trigger an upload; the drop is dispatched
+// explicitly in dispatchUploadPolicy.
+func (u *PlaywrightUploader) ensureFileInput() error {
+	_, err := u.page.Evaluate(`
+		(id) => {
+			if (document.getElementById(id)) return;
+			const input = document.createElement('input');
+			input.type = 'file';
+			input.id = id;
+			input.style.display = 'none';
+			document.body.appendChild(input);
+		}
+	`, uploaderInputID)
+	if err != nil {
+		return fmt.Errorf("inject file input: %w", err)
+	}
+	return nil
+}
+
+// dispatchUploadPolicy streams the file at localPath into the injected file
+// input and fires the browser drag-drop that triggers the
+// /upload/policies/assets request, returning the captured response.
 //
-// ExpectResponse registers the listener BEFORE the drag-drop fires so there is
-// no race. The browser carries the correct session cookies and CSRF token,
+// The file is loaded with set_input_files (read from disk by Chromium), and the
+// drop event reuses the resulting disk-backed File object. This keeps large
+// files (videos) out of the JS heap, avoiding the renderer crash ("target
+// closed") that the previous base64 approach caused.
+//
+// ExpectResponse registers the listener BEFORE the drop fires so there is no
+// race. The browser carries the correct session cookies and CSRF token,
 // sidestepping any server-side origin/CSRF validation that rejects Go HTTP.
-func (u *PlaywrightUploader) dispatchUploadPolicy(b64, filename, contentType string) (playwright.Response, error) {
+func (u *PlaywrightUploader) dispatchUploadPolicy(localPath, filename string) (playwright.Response, error) {
+	if err := u.ensureFileInput(); err != nil {
+		return nil, err
+	}
+	if err := u.page.Locator("#" + uploaderInputID).SetInputFiles(localPath); err != nil {
+		return nil, fmt.Errorf("load file %q into uploader input: %w", filename, err)
+	}
 	return u.page.ExpectResponse(
 		func(rawURL string) bool {
 			return strings.Contains(rawURL, "/upload/policies/assets")
 		},
 		func() error {
 			_, evalErr := u.page.Evaluate(`
-				([b64, fname, ctype]) => {
-					const binary = atob(b64);
-					const bytes = new Uint8Array(binary.length);
-					for (let i = 0; i < binary.length; i++) bytes[i] = binary.charCodeAt(i);
-					const file = new File([bytes], fname, {type: ctype});
+				(id) => {
+					const input = document.getElementById(id);
+					if (!input || !input.files || input.files.length === 0) return;
 					const dt = new DataTransfer();
-					dt.items.add(file);
+					for (const f of input.files) dt.items.add(f);
 					// Target the Primer React textarea; fall back broadly.
 					const el = document.querySelector('.prc-Textarea-TextArea-snlco') ||
 						document.querySelector('file-attachment') ||
@@ -505,10 +556,10 @@ func (u *PlaywrightUploader) dispatchUploadPolicy(b64, filename, contentType str
 					el.dispatchEvent(new DragEvent('dragover',  {dataTransfer: dt, bubbles: true, cancelable: true}));
 					el.dispatchEvent(new DragEvent('drop',      {dataTransfer: dt, bubbles: true, cancelable: true}));
 				}
-			`, []interface{}{b64, filename, contentType})
+			`, uploaderInputID)
 			return evalErr
 		},
-		playwright.PageExpectResponseOptions{Timeout: playwright.Float(30000)},
+		playwright.PageExpectResponseOptions{Timeout: playwright.Float(float64(uploadPolicyTimeout.Milliseconds()))},
 	)
 }
 
@@ -671,6 +722,72 @@ func (u *PlaywrightUploader) Close() {
 	if u.pw != nil {
 		u.pw.Stop() //nolint:errcheck
 	}
+}
+
+// isPageClosedErr reports whether err indicates the Playwright page, browser
+// context, or browser has gone away (typically a renderer crash from running
+// out of memory). Such an error poisons every subsequent operation on the same
+// page, so the caller should rebuild the session with Recover before retrying.
+func isPageClosedErr(err error) bool {
+	if err == nil {
+		return false
+	}
+	msg := strings.ToLower(err.Error())
+	return strings.Contains(msg, "target closed") ||
+		strings.Contains(msg, "target page, context or browser has been closed") ||
+		strings.Contains(msg, "browser has been closed") ||
+		strings.Contains(msg, "page has been closed") ||
+		strings.Contains(msg, "crashed")
+}
+
+// Recover rebuilds the browser session after a crash so the restore can
+// continue instead of failing every remaining asset. It recreates the page and
+// browser context (relaunching the browser if it is no longer connected),
+// restores the saved cookies from the state file, and re-navigates to the
+// new-issue editor. The saved session is reused, so no interactive login is
+// required.
+func (u *PlaywrightUploader) Recover(ctx context.Context, owner, repo string) error {
+	if u.page != nil {
+		u.page.Close() //nolint:errcheck
+	}
+	if u.bctx != nil {
+		u.bctx.Close() //nolint:errcheck
+	}
+
+	if u.browser == nil || !u.browser.IsConnected() {
+		browser, err := u.pw.Chromium.Launch(playwright.BrowserTypeLaunchOptions{
+			Headless: playwright.Bool(u.headless),
+		})
+		if err != nil {
+			return fmt.Errorf("relaunch chromium: %w", err)
+		}
+		u.browser = browser
+	}
+
+	ctxOpts := playwright.BrowserNewContextOptions{
+		UserAgent: playwright.String(uploadUserAgent),
+	}
+	if _, statErr := os.Stat(u.stateFile); statErr == nil {
+		ctxOpts.StorageStatePath = playwright.String(u.stateFile)
+	}
+	bctx, err := u.browser.NewContext(ctxOpts)
+	if err != nil {
+		return fmt.Errorf("recreate browser context: %w", err)
+	}
+	u.bctx = bctx
+
+	page, err := bctx.NewPage()
+	if err != nil {
+		return fmt.Errorf("recreate page: %w", err)
+	}
+	u.page = page
+
+	// Re-navigate so the markdown editor is present again. headed=false because
+	// the saved session is reused; recovery never starts an interactive login.
+	if err := u.Init(ctx, u.stateFile, owner, repo, false); err != nil {
+		return fmt.Errorf("reinitialize browser session: %w", err)
+	}
+	return nil
 }
 
 // RestoreOptions holds configuration for the restore operation.
@@ -865,6 +982,16 @@ func Restore(ctx context.Context, g *GitHubClient, repo repository.Repository, i
 		}
 
 		newURL, uploadErr := uploader.Upload(ctx, localPath, a.Filename)
+		// A renderer crash ("target closed") poisons the page and would make
+		// every remaining upload fail. Rebuild the session and retry this file
+		// once before giving up on it.
+		if uploadErr != nil && isPageClosedErr(uploadErr) {
+			logger.Warn("browser session lost, recovering", "file", localPath, "err", uploadErr)
+			if recErr := uploader.Recover(ctx, owner, repoName); recErr != nil {
+				return fmt.Errorf("recover browser session after crash: %w", recErr)
+			}
+			newURL, uploadErr = uploader.Upload(ctx, localPath, a.Filename)
+		}
 		lastUploadAt = time.Now()
 		if uploadErr != nil {
 			logger.Warn("upload failed, skipping", "file", localPath, "err", uploadErr)
