@@ -782,6 +782,10 @@ func Restore(ctx context.Context, g *GitHubClient, repo repository.Repository, i
 		urlReplacements[a.AssetURL] = newURL
 		logger.Info("uploaded asset", "old", a.AssetURL, "new", newURL)
 	}
+	if len(urlReplacements) == 0 {
+		logger.Info("no assets were successfully uploaded")
+		return nil
+	}
 
 	// Group upload results by PR + location to minimise API calls.
 	// Track the old asset URLs found at each location so a migrated comment can
