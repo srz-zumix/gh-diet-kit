@@ -1000,7 +1000,7 @@ func resolveDstLocationBody(ctx context.Context, g *GitHubClient, repo repositor
 				return "", err
 			}
 			if comment == nil {
-				return "", nil
+				return "", fmt.Errorf("destination review comment not found")
 			}
 		}
 		return comment.GetBody(), nil
