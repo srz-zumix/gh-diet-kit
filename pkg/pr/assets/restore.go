@@ -270,9 +270,10 @@ func (u *PlaywrightUploader) Upload(ctx context.Context, localPath, filename str
 	b64 := base64.StdEncoding.EncodeToString(data)
 
 	// Step 1: let the browser make the authenticated policy request, retrying
-	// when GitHub responds with a secondary rate limit (429/403). These limits
-	// require waiting (often a minute or more), so honor any Retry-After header
-	// and otherwise back off with an increasing delay.
+	// when GitHub responds with a secondary rate limit (429/403). Asset uploads
+	// count against the content-creation limit, whose hourly bucket can require
+	// a long wait, so honor any Retry-After / x-ratelimit-reset header to
+	// auto-resume and otherwise back off with an increasing delay.
 	var policy uploadPolicy
 	var lastPolicyErr error
 	for attempt := 1; attempt <= maxPolicyAttempts; attempt++ {
@@ -368,41 +369,86 @@ func (u *PlaywrightUploader) Upload(ctx context.Context, localPath, filename str
 		confirmToken = policy.UploadAuthenticityToken
 	}
 	confirmBodyStr := url.Values{"authenticity_token": {confirmToken}}.Encode()
-	confirmResult, err := u.page.Evaluate(`
-		([confirmURL, body]) => fetch(confirmURL, {
-			method: 'PUT',
-			headers: {
-				'Content-Type': 'application/x-www-form-urlencoded; charset=UTF-8',
-				'Accept': 'application/json',
-				'X-Requested-With': 'XMLHttpRequest',
-			},
-			body: body,
-			credentials: 'include',
-		}).then(async r => ({ status: r.status, body: await r.text() }))
-	`, []interface{}{policy.AssetUploadURL, confirmBodyStr})
-	if err != nil {
-		return "", fmt.Errorf("upload confirm request for %q: %w", filename, err)
-	}
-	resultMap, ok := confirmResult.(map[string]interface{})
-	if !ok {
-		return "", fmt.Errorf("unexpected confirm response type for %q: %T", filename, confirmResult)
-	}
-	var confirmStatus int
-	switch v := resultMap["status"].(type) {
-	case float64:
-		confirmStatus = int(v)
-	case int:
-		confirmStatus = v
-	case int64:
-		confirmStatus = int(v)
-	default:
-		return "", fmt.Errorf("unexpected confirm status type for %q: %T", filename, resultMap["status"])
-	}
-	if confirmStatus != http.StatusOK && confirmStatus != http.StatusCreated {
-		return "", fmt.Errorf("upload confirmation returned %d for %q: %s", confirmStatus, filename, resultMap["body"])
+	if err := u.confirmUpload(ctx, policy.AssetUploadURL, confirmBodyStr, filename); err != nil {
+		return "", err
 	}
 
 	return policy.Asset.Href, nil
+}
+
+// confirmUpload finalizes an uploaded asset via the browser session so cookies
+// are included automatically. Confirmation is a content-creating request, so it
+// retries on GitHub's secondary rate limit (429/403), honoring Retry-After /
+// x-ratelimit-reset to auto-resume at the time the server allows.
+func (u *PlaywrightUploader) confirmUpload(ctx context.Context, assetUploadURL, confirmBody, filename string) error {
+	var lastErr error
+	for attempt := 1; attempt <= maxPolicyAttempts; attempt++ {
+		confirmResult, err := u.page.Evaluate(`
+			([confirmURL, body]) => fetch(confirmURL, {
+				method: 'PUT',
+				headers: {
+					'Content-Type': 'application/x-www-form-urlencoded; charset=UTF-8',
+					'Accept': 'application/json',
+					'X-Requested-With': 'XMLHttpRequest',
+				},
+				body: body,
+				credentials: 'include',
+			}).then(async r => ({
+				status: r.status,
+				body: await r.text(),
+				retryAfter: r.headers.get('retry-after') || '',
+				rateLimitReset: r.headers.get('x-ratelimit-reset') || '',
+			}))
+		`, []interface{}{assetUploadURL, confirmBody})
+		if err != nil {
+			return fmt.Errorf("upload confirm request for %q: %w", filename, err)
+		}
+		resultMap, ok := confirmResult.(map[string]interface{})
+		if !ok {
+			return fmt.Errorf("unexpected confirm response type for %q: %T", filename, confirmResult)
+		}
+		status, serr := confirmResponseStatus(resultMap)
+		if serr != nil {
+			return fmt.Errorf("%w for %q", serr, filename)
+		}
+		if status == http.StatusOK || status == http.StatusCreated {
+			return nil
+		}
+
+		lastErr = fmt.Errorf("upload confirmation returned %d for %q: %s", status, filename, resultMap["body"])
+		if !isRateLimitStatus(status) {
+			return lastErr
+		}
+		if attempt == maxPolicyAttempts {
+			break
+		}
+		retryAfter, _ := resultMap["retryAfter"].(string)
+		reset, _ := resultMap["rateLimitReset"].(string)
+		wait := rateLimitWait(retryAfter, reset, policyRateLimitBackoff(attempt))
+		logger.Warn("upload confirm rate-limited, backing off",
+			"file", filename, "status", status, "attempt", attempt, "wait", wait.String())
+		select {
+		case <-ctx.Done():
+			return ctx.Err()
+		case <-time.After(wait):
+		}
+	}
+	return lastErr
+}
+
+// confirmResponseStatus extracts the HTTP status code from the confirm-step
+// fetch result, accounting for the numeric types Playwright may return.
+func confirmResponseStatus(resultMap map[string]interface{}) (int, error) {
+	switch v := resultMap["status"].(type) {
+	case float64:
+		return int(v), nil
+	case int:
+		return v, nil
+	case int64:
+		return int(v), nil
+	default:
+		return 0, fmt.Errorf("unexpected confirm status type %T", resultMap["status"])
+	}
 }
 
 // maxS3UploadAttempts is the number of times an S3 presigned upload is tried
@@ -411,15 +457,23 @@ const maxS3UploadAttempts = 6
 
 // Upload policy (GitHub secondary rate limit) retry settings.
 const (
-	// maxPolicyAttempts is the number of times the upload-policy request is tried
-	// before giving up when GitHub returns a secondary rate limit.
+	// maxPolicyAttempts is the number of times a content-creating request (the
+	// upload policy and the upload confirmation) is tried before giving up when
+	// GitHub returns a secondary rate limit.
 	maxPolicyAttempts = 5
-	// policyRateLimitBaseDelay is the initial backoff for secondary rate limits.
-	// GitHub's "you have exceeded a secondary rate limit" page asks callers to
-	// wait at least a minute, so start high.
+	// policyRateLimitBaseDelay is the initial blind backoff for secondary rate
+	// limits when the server does not tell us how long to wait. GitHub's "you
+	// have exceeded a secondary rate limit" page asks callers to wait at least a
+	// minute, so start high.
 	policyRateLimitBaseDelay = 60 * time.Second
-	// policyRateLimitMaxDelay caps the secondary rate limit backoff.
+	// policyRateLimitMaxDelay caps the blind secondary rate limit backoff used
+	// when no Retry-After / x-ratelimit-reset header is present.
 	policyRateLimitMaxDelay = 5 * time.Minute
+	// maxRateLimitWait caps a server-directed wait (Retry-After or
+	// x-ratelimit-reset). Asset uploads count against GitHub's content-creation
+	// secondary rate limit, whose hourly bucket can require waiting up to ~1
+	// hour, so allow a long wait while guarding against an absurd value.
+	maxRateLimitWait = 65 * time.Minute
 )
 
 // dispatchUploadPolicy fires the browser drag-drop that triggers the
@@ -465,20 +519,58 @@ func isRateLimitStatus(status int) bool {
 }
 
 // retryAfterDelay returns the wait duration before retrying a rate-limited
-// request. It honors a Retry-After header (in seconds) when present, otherwise
-// falls back to the provided default.
+// Playwright request. It prefers the server-directed Retry-After header, then
+// the x-ratelimit-reset header, and otherwise falls back to the provided blind
+// backoff. See rateLimitWait for details.
 func retryAfterDelay(resp playwright.Response, fallback time.Duration) time.Duration {
 	if resp == nil {
 		return fallback
 	}
-	v, err := resp.HeaderValue("retry-after")
-	if err != nil || v == "" {
-		return fallback
+	retryAfter, _ := resp.HeaderValue("retry-after")
+	reset, _ := resp.HeaderValue("x-ratelimit-reset")
+	return rateLimitWait(retryAfter, reset, fallback)
+}
+
+// rateLimitWait determines how long to wait before retrying a request that hit
+// GitHub's secondary rate limit. It honors the server's guidance to auto-resume
+// at the right time: the Retry-After header (in seconds) takes priority, then
+// the x-ratelimit-reset header (a UTC epoch second), and finally the provided
+// blind backoff when neither header is present. Server-directed waits are capped
+// at maxRateLimitWait so the hourly content-creation limit (~1 hour) is honored
+// without trusting an absurd value.
+func rateLimitWait(retryAfter, rateLimitReset string, fallback time.Duration) time.Duration {
+	if secs, ok := parsePositiveSeconds(retryAfter); ok {
+		return capRateLimitWait(time.Duration(secs) * time.Second)
 	}
-	if secs, perr := strconv.Atoi(strings.TrimSpace(v)); perr == nil && secs > 0 {
-		return time.Duration(secs) * time.Second
+	if epoch, ok := parsePositiveSeconds(rateLimitReset); ok {
+		// Add a small buffer so we resume just after the window resets.
+		if d := time.Until(time.Unix(int64(epoch), 0)) + time.Second; d > 0 {
+			return capRateLimitWait(d)
+		}
 	}
 	return fallback
+}
+
+// capRateLimitWait clamps a server-directed wait to maxRateLimitWait.
+func capRateLimitWait(d time.Duration) time.Duration {
+	if d > maxRateLimitWait {
+		return maxRateLimitWait
+	}
+	return d
+}
+
+// parsePositiveSeconds parses a header value as a positive integer number of
+// seconds (or epoch seconds), returning false when it is empty or non-positive.
+func parsePositiveSeconds(v string) (int, bool) {
+	v = strings.TrimSpace(v)
+	if v == "" {
+		return 0, false
+	}
+	n, err := strconv.Atoi(v)
+	if err != nil || n <= 0 {
+		return 0, false
+	}
+	return n, true
 }
 
 // policyRateLimitBackoff returns the exponential backoff (with jitter) for the
