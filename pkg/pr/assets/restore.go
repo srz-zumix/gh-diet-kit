@@ -278,12 +278,13 @@ func (u *PlaywrightUploader) Init(ctx context.Context, stateFile, owner, repo st
 //     CSRF. ExpectResponse captures the response. Streaming from disk avoids
 //     loading the whole file into the JS heap, which crashes the renderer on
 //     large videos.
-//  2. Go net/http POST to S3 presigned URL (no auth required).
+//  2. Go net/http POST to S3 presigned URL (no auth required), streaming the
+//     file from disk so large videos never sit fully in memory.
 //  3. Browser fetch() PUT to /upload/assets/{id} to confirm the upload.
 func (u *PlaywrightUploader) Upload(ctx context.Context, localPath, filename string) (string, error) {
-	data, err := os.ReadFile(localPath)
+	fileInfo, err := os.Stat(localPath)
 	if err != nil {
-		return "", fmt.Errorf("read file %q: %w", localPath, err)
+		return "", fmt.Errorf("stat file %q: %w", localPath, err)
 	}
 
 	// Step 1: let the browser make the authenticated policy request, retrying
@@ -342,39 +343,52 @@ func (u *PlaywrightUploader) Upload(ctx context.Context, localPath, filename str
 
 	httpClient := &http.Client{Timeout: 5 * time.Minute}
 
-	// Step 2: upload file bytes to S3 using the presigned multipart form.
+	// Step 2: upload the file to S3 using the presigned multipart form.
 	// S3 presigned POSTs do not require session cookies or CSRF tokens.
-	var s3Buf bytes.Buffer
-	mw := multipart.NewWriter(&s3Buf)
+	//
+	// The multipart body is streamed from disk: only the small framing prefix
+	// (form fields + file part header) and suffix (closing boundary) are held in
+	// memory, while the file bytes are read straight from disk on each attempt.
+	// This keeps large videos out of RSS, matching the disk-streaming the
+	// Playwright step already uses.
+	var framing bytes.Buffer
+	mw := multipart.NewWriter(&framing)
 	for k, v := range policy.Form {
 		if err := mw.WriteField(k, v); err != nil {
 			return "", fmt.Errorf("write S3 form field %q: %w", k, err)
 		}
 	}
-	fw, err := mw.CreateFormFile("file", filename)
-	if err != nil {
+	// CreateFormFile writes the file part header (boundary + Content-Disposition)
+	// into framing but no content; the file bytes are streamed in afterwards.
+	if _, err := mw.CreateFormFile("file", filename); err != nil {
 		return "", fmt.Errorf("create S3 file field: %w", err)
 	}
-	if _, err := fw.Write(data); err != nil {
-		return "", fmt.Errorf("write file data to S3 form: %w", err)
-	}
-	if err := mw.Close(); err != nil {
-		return "", fmt.Errorf("close S3 multipart writer: %w", err)
-	}
-	// Capture the encoded body and content type so the request can be safely
-	// retried (the multipart buffer is consumed once the body is read).
-	// s3FormBytes aliases s3Buf's backing storage; s3Buf must not be written to
-	// after this point, and uploadToS3WithRetry only reads the slice (via
-	// bytes.NewReader) on each attempt, so the alias is safe and avoids copying
-	// a potentially multi-MB body.
-	s3FormBytes := s3Buf.Bytes()
+	// prefix is everything up to and including the file part header; suffix is the
+	// closing boundary that multipart.Writer.Close would emit. The file bytes go
+	// between them, streamed from disk.
+	prefix := append([]byte(nil), framing.Bytes()...)
+	suffix := []byte(fmt.Sprintf("\r\n--%s--\r\n", mw.Boundary()))
 	s3ContentType := mw.FormDataContentType()
+	// Set an explicit Content-Length so net/http sends a known length instead of
+	// chunked transfer encoding, which S3 presigned POSTs reject.
+	s3ContentLength := int64(len(prefix)) + fileInfo.Size() + int64(len(suffix))
+
+	// newS3Body reopens the file and rebuilds the streaming body for each attempt,
+	// since the previous attempt's reader is consumed once sent.
+	newS3Body := func() (io.ReadCloser, error) {
+		f, err := os.Open(localPath)
+		if err != nil {
+			return nil, fmt.Errorf("open file %q for S3 upload: %w", localPath, err)
+		}
+		body := io.MultiReader(bytes.NewReader(prefix), f, bytes.NewReader(suffix))
+		return multiReadCloser{Reader: body, Closer: f}, nil
+	}
 
 	// S3 presigned uploads occasionally fail with transient errors such as
 	// 503 SlowDown when many uploads happen in a short burst. Retry with
 	// exponential backoff (and jitter) so the whole restore does not abort on a
 	// single throttled request.
-	if err := uploadToS3WithRetry(ctx, httpClient, policy.UploadURL, s3ContentType, s3FormBytes, filename); err != nil {
+	if err := uploadToS3WithRetry(ctx, httpClient, policy.UploadURL, s3ContentType, newS3Body, s3ContentLength, filename); err != nil {
 		return "", err
 	}
 
@@ -544,14 +558,18 @@ func (u *PlaywrightUploader) dispatchUploadPolicy(localPath, filename string) (p
 			_, evalErr := u.page.Evaluate(`
 				(id) => {
 					const input = document.getElementById(id);
-					if (!input || !input.files || input.files.length === 0) return;
+					if (!input || !input.files || input.files.length === 0) {
+						throw new Error('upload input has no files');
+					}
 					const dt = new DataTransfer();
 					for (const f of input.files) dt.items.add(f);
 					// Target the Primer React textarea; fall back broadly.
 					const el = document.querySelector('.prc-Textarea-TextArea-snlco') ||
 						document.querySelector('file-attachment') ||
 						document.querySelector('textarea');
-					if (!el) return;
+					if (!el) {
+						throw new Error('upload drop target not found');
+					}
 					el.dispatchEvent(new DragEvent('dragenter', {dataTransfer: dt, bubbles: true}));
 					el.dispatchEvent(new DragEvent('dragover',  {dataTransfer: dt, bubbles: true, cancelable: true}));
 					el.dispatchEvent(new DragEvent('drop',      {dataTransfer: dt, bubbles: true, cancelable: true}));
@@ -632,17 +650,32 @@ func policyRateLimitBackoff(attempt int) time.Duration {
 	return backoff + jitter
 }
 
+// multiReadCloser streams an S3 multipart body from disk: Reader concatenates the
+// in-memory framing with the on-disk file, and Closer closes the underlying file.
+type multiReadCloser struct {
+	io.Reader
+	io.Closer
+}
+
 // uploadToS3WithRetry POSTs the multipart form body to the S3 presigned URL,
 // retrying transient failures (network errors and retryable HTTP status codes
-// such as 503 SlowDown) with exponential backoff and jitter. The body bytes are
-// re-read on every attempt, so the caller must pass an immutable slice.
-func uploadToS3WithRetry(ctx context.Context, httpClient *http.Client, uploadURL, contentType string, body []byte, filename string) error {
+// such as 503 SlowDown) with exponential backoff and jitter. newBody rebuilds
+// the streaming body (reopening the file) for each attempt, and contentLength is
+// the fixed total body size used to set Content-Length on every request.
+func uploadToS3WithRetry(ctx context.Context, httpClient *http.Client, uploadURL, contentType string, newBody func() (io.ReadCloser, error), contentLength int64, filename string) error {
 	var lastErr error
 	for attempt := 1; attempt <= maxS3UploadAttempts; attempt++ {
-		req, err := http.NewRequestWithContext(ctx, http.MethodPost, uploadURL, bytes.NewReader(body))
+		body, err := newBody()
 		if err != nil {
+			return err
+		}
+		req, err := http.NewRequestWithContext(ctx, http.MethodPost, uploadURL, body)
+		if err != nil {
+			body.Close() //nolint:errcheck
 			return fmt.Errorf("create S3 request: %w", err)
 		}
+		// httpClient.Do closes req.Body, so the file is closed after each attempt.
+		req.ContentLength = contentLength
 		req.Header.Set("Content-Type", contentType)
 
 		resp, err := httpClient.Do(req)
