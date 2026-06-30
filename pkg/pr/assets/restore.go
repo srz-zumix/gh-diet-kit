@@ -548,7 +548,7 @@ func (u *PlaywrightUploader) dispatchUploadPolicy(localPath, filename string) (p
 		return nil, err
 	}
 	if err := u.page.Locator("#" + uploaderInputID).SetInputFiles(localPath); err != nil {
-		return nil, fmt.Errorf("load file %q into uploader input: %w", filename, err)
+		return nil, fmt.Errorf("load file %q from %q into uploader input: %w", filename, localPath, err)
 	}
 	return u.page.ExpectResponse(
 		func(rawURL string) bool {
