@@ -928,6 +928,9 @@ func Restore(ctx context.Context, g *GitHubClient, repo repository.Repository, i
 		if err := ctx.Err(); err != nil {
 			return fmt.Errorf("destination content check canceled: %w", err)
 		}
+		// checked counts every location processed regardless of outcome, so it
+		// stays comparable to the "locations"/"total" counts logged alongside it.
+		checked++
 		body, bodyErr := resolveDstLocationBody(ctx, g, repo, cache, loc.PRNumber, loc.Location, loc.LocationID, oldURLs)
 		if bodyErr != nil {
 			if err := ctx.Err(); err != nil {
@@ -935,14 +938,13 @@ func Restore(ctx context.Context, g *GitHubClient, repo repository.Repository, i
 			}
 			logger.Warn("failed to resolve restore target, skipping uploads for location",
 				"pr", loc.PRNumber, "location", loc.Location, "id", loc.LocationID, "err", bodyErr)
-			continue
-		}
-		for oldURL := range oldURLs {
-			if strings.Contains(body, oldURL) {
-				restoreURLs[oldURL] = true
+		} else {
+			for oldURL := range oldURLs {
+				if strings.Contains(body, oldURL) {
+					restoreURLs[oldURL] = true
+				}
 			}
 		}
-		checked++
 		if checked%precheckProgressInterval == 0 {
 			logger.Info("checking destination content", "checked", checked, "total", len(locsByKey))
 		}
