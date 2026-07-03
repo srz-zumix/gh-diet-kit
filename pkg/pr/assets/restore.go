@@ -915,20 +915,41 @@ func Restore(ctx context.Context, g *GitHubClient, repo repository.Repository, i
 	// Only upload assets whose source URLs still exist in the destination body or
 	// comment that will be updated. This avoids uploading assets that have no
 	// replacement target.
+	//
+	// This precheck issues one or more API calls per location and can take a
+	// while for large restores, so it logs its progress periodically. It also
+	// aborts as soon as the context is canceled (e.g. Ctrl+C) instead of
+	// grinding through the remaining locations with canceled-context warnings.
+	logger.Info("checking destination content for asset links", "locations", len(locsByKey))
+	const precheckProgressInterval = 100
+	checked := 0
 	restoreURLs := make(map[string]bool)
 	for loc, oldURLs := range locsByKey {
+		if err := ctx.Err(); err != nil {
+			return fmt.Errorf("destination content check canceled: %w", err)
+		}
+		// checked counts every location processed regardless of outcome, so it
+		// stays comparable to the "locations"/"total" counts logged alongside it.
+		checked++
 		body, bodyErr := resolveDstLocationBody(ctx, g, repo, cache, loc.PRNumber, loc.Location, loc.LocationID, oldURLs)
 		if bodyErr != nil {
+			if err := ctx.Err(); err != nil {
+				return fmt.Errorf("destination content check canceled: %w", err)
+			}
 			logger.Warn("failed to resolve restore target, skipping uploads for location",
 				"pr", loc.PRNumber, "location", loc.Location, "id", loc.LocationID, "err", bodyErr)
-			continue
-		}
-		for oldURL := range oldURLs {
-			if strings.Contains(body, oldURL) {
-				restoreURLs[oldURL] = true
+		} else {
+			for oldURL := range oldURLs {
+				if strings.Contains(body, oldURL) {
+					restoreURLs[oldURL] = true
+				}
 			}
 		}
+		if checked%precheckProgressInterval == 0 {
+			logger.Info("checking destination content", "checked", checked, "total", len(locsByKey))
+		}
 	}
+	logger.Info("destination content check completed", "locations", len(locsByKey), "matched_urls", len(restoreURLs))
 
 	if len(restoreURLs) == 0 {
 		logger.Info("no asset links matched destination content")
