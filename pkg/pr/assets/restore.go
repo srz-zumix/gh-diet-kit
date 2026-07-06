@@ -912,6 +912,30 @@ func Restore(ctx context.Context, g *GitHubClient, repo repository.Repository, i
 	// most once across the whole restore run (avoids an N+1 listing pattern).
 	cache := newCommentCache(g, repo)
 
+	// Initialize the Playwright uploader (unless dry-run) up front so the
+	// interactive login prompt appears at the very start of the command. The
+	// precheck below can issue many API calls and take a while; opening the
+	// browser first lets the user log in immediately instead of waiting for the
+	// precheck to finish before being prompted.
+	var uploader *PlaywrightUploader
+	if !opts.DryRun {
+		// Abort before installing/launching the browser if the context is
+		// already canceled (e.g. Ctrl+C), so a canceled run does not trigger an
+		// interactive login prompt or a long browser startup.
+		if err := ctx.Err(); err != nil {
+			return fmt.Errorf("browser initialization canceled: %w", err)
+		}
+		uploader, err = NewPlaywrightUploader(opts.StateFile, repo.Host, opts.Headed)
+		if err != nil {
+			return fmt.Errorf("initialize browser uploader: %w", err)
+		}
+		defer uploader.Close()
+
+		if err := uploader.Init(ctx, opts.StateFile, owner, repoName, opts.Headed); err != nil {
+			return fmt.Errorf("initialize browser session: %w", err)
+		}
+	}
+
 	// Only upload assets whose source URLs still exist in the destination body or
 	// comment that will be updated. This avoids uploading assets that have no
 	// replacement target.
@@ -954,20 +978,6 @@ func Restore(ctx context.Context, g *GitHubClient, repo repository.Repository, i
 	if len(restoreURLs) == 0 {
 		logger.Info("no asset links matched destination content")
 		return nil
-	}
-
-	// Initialize the Playwright uploader (unless dry-run).
-	var uploader *PlaywrightUploader
-	if !opts.DryRun {
-		uploader, err = NewPlaywrightUploader(opts.StateFile, repo.Host, opts.Headed)
-		if err != nil {
-			return fmt.Errorf("initialize browser uploader: %w", err)
-		}
-		defer uploader.Close()
-
-		if err := uploader.Init(ctx, opts.StateFile, owner, repoName, opts.Headed); err != nil {
-			return fmt.Errorf("initialize browser session: %w", err)
-		}
 	}
 
 	// Pace uploads to avoid GitHub's secondary rate limit. lastUploadAt tracks
