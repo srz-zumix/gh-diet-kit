@@ -919,6 +919,12 @@ func Restore(ctx context.Context, g *GitHubClient, repo repository.Repository, i
 	// precheck to finish before being prompted.
 	var uploader *PlaywrightUploader
 	if !opts.DryRun {
+		// Abort before installing/launching the browser if the context is
+		// already canceled (e.g. Ctrl+C), so a canceled run does not trigger an
+		// interactive login prompt or a long browser startup.
+		if err := ctx.Err(); err != nil {
+			return fmt.Errorf("browser initialization canceled: %w", err)
+		}
 		uploader, err = NewPlaywrightUploader(opts.StateFile, repo.Host, opts.Headed)
 		if err != nil {
 			return fmt.Errorf("initialize browser uploader: %w", err)
