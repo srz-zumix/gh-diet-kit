@@ -7,7 +7,7 @@ require (
 	github.com/cli/go-gh/v2 v2.13.0
 	github.com/dustin/go-humanize v1.0.1
 	github.com/google/go-github/v88 v88.0.0
-	github.com/playwright-community/playwright-go v0.5700.1
+	github.com/playwright-community/playwright-go v0.6000.0
 	github.com/spf13/cobra v1.10.2
 	github.com/srz-zumix/go-gh-extension v0.5.2
 	golang.org/x/sync v0.20.0
@@ -49,7 +49,7 @@ require (
 	github.com/ddddddO/gtree v1.13.6 // indirect
 	github.com/deckarep/golang-set/v2 v2.8.0 // indirect
 	github.com/fatih/color v1.19.0 // indirect
-	github.com/go-jose/go-jose/v3 v3.0.4 // indirect
+	github.com/go-jose/go-jose/v3 v3.0.5 // indirect
 	github.com/go-stack/stack v1.8.1 // indirect
 	github.com/goccy/go-yaml v1.19.2 // indirect
 	github.com/golang-jwt/jwt/v4 v4.5.2 // indirect
