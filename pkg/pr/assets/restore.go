@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"math/rand"
@@ -849,6 +850,11 @@ type RestoreOptions struct {
 // i.e. roughly one every 0.75s). Uploads are otherwise fast enough to trip it.
 const DefaultUploadDelay = 1 * time.Second
 
+// RestoredMetadataFilename is the fixed name of the metadata file written to the
+// input directory after a restore. It lists the assets still needing work so a
+// re-run can resume without re-searching already-migrated comments.
+const RestoredMetadataFilename = "metadata.restored.json"
+
 // CheckWriteAccess verifies that the authenticated user has write (push) access
 // to the repository, which is required to edit PR bodies and comments during a
 // restore. It returns an error when the repository cannot be read or the user
@@ -886,12 +892,6 @@ func Restore(ctx context.Context, g *GitHubClient, repo repository.Repository, i
 	prFilter := make(map[int]bool, len(opts.PRNumbers))
 	for _, n := range opts.PRNumbers {
 		prFilter[n] = true
-	}
-
-	type locKey struct {
-		PRNumber   int
-		Location   AssetLocation
-		LocationID int64
 	}
 
 	// Track the old asset URLs found at each location so a migrated comment can
@@ -948,6 +948,23 @@ func Restore(ctx context.Context, g *GitHubClient, repo repository.Repository, i
 	const precheckProgressInterval = 100
 	checked := 0
 	restoreURLs := make(map[string]bool)
+	// resolvedDstID maps each location to the destination comment ID resolved
+	// during the precheck (0 for a PR body). It lets the restore-result metadata
+	// record the real destination ID so a re-run can fetch the comment directly
+	// instead of falling back to a full comment search.
+	resolvedDstID := make(map[locKey]int64)
+	// Per-location precheck outcome, consumed by the deferred resume-metadata
+	// writer to decide whether each asset's work is done, still pending, or of
+	// unknown status. A location is exactly one of: resolved (body was read, so
+	// URL presence is known), unresolved (transient/unknown failure, keep for a
+	// --continue retry), or permanently absent (confirmed 404 / not found, so its
+	// work is unrestorable and dropped).
+	locResolved := make(map[locKey]bool)
+	locURLPresent := make(map[locKey]map[string]bool)
+	unresolvedLocs := make(map[locKey]bool)
+	// Track PRs already reported so the message is logged once per PR instead of
+	// once per location on it.
+	warnedMissingPRs := make(map[int]bool)
 	for loc, oldURLs := range locsByKey {
 		if err := ctx.Err(); err != nil {
 			return fmt.Errorf("destination content check canceled: %w", err)
@@ -955,25 +972,118 @@ func Restore(ctx context.Context, g *GitHubClient, repo repository.Repository, i
 		// checked counts every location processed regardless of outcome, so it
 		// stays comparable to the "locations"/"total" counts logged alongside it.
 		checked++
-		body, bodyErr := resolveDstLocationBody(ctx, g, repo, cache, loc.PRNumber, loc.Location, loc.LocationID, oldURLs)
+		// Probe the PR once per PR (memoized in the cache) so a failing lookup is
+		// not repeated for each of its locations, which is what makes the precheck
+		// slow when many locations belong to missing PRs.
+		if _, prErr := cache.getPullRequest(ctx, loc.PRNumber); prErr != nil {
+			if err := ctx.Err(); err != nil {
+				return fmt.Errorf("destination content check canceled: %w", err)
+			}
+			// A confirmed 404 means the source PR does not exist in the
+			// destination (e.g. a migration renumbered its PRs); its locations
+			// are unrestorable and are intentionally dropped. Any other error
+			// (rate limit, 5xx, auth) is transient/unknown, so mark the location
+			// unresolved and keep it for a later --continue retry instead of
+			// silently treating it as done.
+			if gh.IsHTTPNotFound(prErr) {
+				if !warnedMissingPRs[loc.PRNumber] {
+					warnedMissingPRs[loc.PRNumber] = true
+					logger.Warn("destination PR not found, skipping its locations",
+						"pr", loc.PRNumber, "err", prErr)
+				}
+			} else {
+				unresolvedLocs[loc] = true
+				if !warnedMissingPRs[loc.PRNumber] {
+					warnedMissingPRs[loc.PRNumber] = true
+					logger.Warn("failed to check destination PR, keeping its locations for --continue",
+						"pr", loc.PRNumber, "err", prErr)
+				}
+			}
+			if checked%precheckProgressInterval == 0 {
+				logger.Info("checking destination content", "checked", checked, "total", len(locsByKey))
+			}
+			continue
+		}
+		body, destID, bodyErr := resolveDstLocationBody(ctx, g, repo, cache, loc.PRNumber, loc.Location, loc.LocationID, oldURLs)
 		if bodyErr != nil {
 			if err := ctx.Err(); err != nil {
 				return fmt.Errorf("destination content check canceled: %w", err)
 			}
-			logger.Warn("failed to resolve restore target, skipping uploads for location",
-				"pr", loc.PRNumber, "location", loc.Location, "id", loc.LocationID, "err", bodyErr)
+			// A confirmed "not found" is permanent (the comment is gone), so the
+			// location is dropped. Any other error is transient/unknown, so mark
+			// it unresolved and keep it for a --continue retry.
+			if errors.Is(bodyErr, errDstLocationNotFound) {
+				logger.Warn("destination location not found, skipping uploads for location",
+					"pr", loc.PRNumber, "location", loc.Location, "id", loc.LocationID, "err", bodyErr)
+			} else {
+				unresolvedLocs[loc] = true
+				logger.Warn("failed to resolve restore target, keeping location for --continue",
+					"pr", loc.PRNumber, "location", loc.Location, "id", loc.LocationID, "err", bodyErr)
+			}
 		} else {
+			locResolved[loc] = true
+			resolvedDstID[loc] = destID
+			present := make(map[string]bool)
 			for oldURL := range oldURLs {
 				if strings.Contains(body, oldURL) {
+					present[oldURL] = true
 					restoreURLs[oldURL] = true
 				}
 			}
+			locURLPresent[loc] = present
 		}
 		if checked%precheckProgressInterval == 0 {
 			logger.Info("checking destination content", "checked", checked, "total", len(locsByKey))
 		}
 	}
 	logger.Info("destination content check completed", "locations", len(locsByKey), "matched_urls", len(restoreURLs))
+
+	// urlReplacements maps each successfully uploaded old asset URL to its new
+	// destination URL. It is declared here (before the deferred writer below) so
+	// the writer can tell which candidates were completed this run.
+	urlReplacements := make(map[string]string)
+	// updatedLocs records locations whose destination content was successfully
+	// edited this run, or that were confirmed to no longer contain the old URL
+	// (a no-op edit). It is declared before the deferred writer so the writer can
+	// tell which uploaded assets were actually applied. A URL update that fails
+	// is only logged (it does not abort the restore), so an uploaded asset must
+	// stay in the resume file until its location is recorded here.
+	updatedLocs := make(map[locKey]bool)
+
+	// Write a "restore result" metadata file (fixed name, in the input dir) when
+	// the run finishes, so a re-run can resume without re-searching comments that
+	// were already migrated. It keeps only the assets that still need work and
+	// omits the ones proven done. Each remaining asset's location ID is rewritten
+	// to the destination comment ID resolved during the precheck so the next run
+	// fetches it directly. Skipped in dry-run, which makes no changes.
+	defer func() {
+		if opts.DryRun {
+			return
+		}
+		remaining := make([]*PRAsset, 0)
+		for _, a := range meta.Assets {
+			if len(prFilter) > 0 && !prFilter[a.PRNumber] {
+				continue
+			}
+			key := locKey{a.PRNumber, a.Location, a.LocationID}
+			if !resumeAssetPending(key, a.AssetURL, locResolved, locURLPresent, unresolvedLocs, urlReplacements, updatedLocs) {
+				continue
+			}
+			clone := *a
+			if destID, ok := resolvedDstID[key]; ok {
+				clone.LocationID = destID
+			}
+			remaining = append(remaining, &clone)
+		}
+		outMeta := *meta
+		outMeta.Assets = remaining
+		restoredPath := filepath.Join(inputDir, RestoredMetadataFilename)
+		if writeErr := WriteMetadata(restoredPath, outMeta); writeErr != nil {
+			logger.Warn("failed to write restore result metadata", "path", restoredPath, "err", writeErr)
+			return
+		}
+		logger.Info("wrote restore result metadata", "path", restoredPath, "remaining", len(remaining))
+	}()
 
 	if len(restoreURLs) == 0 {
 		logger.Info("no asset links matched destination content")
@@ -989,7 +1099,7 @@ func Restore(ctx context.Context, g *GitHubClient, repo repository.Repository, i
 	var lastUploadAt time.Time
 
 	// Build URL replacement map: old asset URL → new CDN URL.
-	urlReplacements := make(map[string]string)
+	// urlReplacements was declared earlier so the deferred result writer can read it.
 	for _, a := range meta.Assets {
 		if err := ctx.Err(); err != nil {
 			return err
@@ -1056,11 +1166,13 @@ func Restore(ctx context.Context, g *GitHubClient, repo repository.Repository, i
 			}
 			newURL, uploadErr = uploader.Upload(ctx, localPath, a.Filename)
 		}
-		lastUploadAt = time.Now()
 		if uploadErr != nil {
 			logger.Warn("upload failed, skipping", "file", localPath, "err", uploadErr)
 			continue
 		}
+		// Only record the timestamp after a successful upload so a skipped or
+		// failed upload does not pace (delay) the next one.
+		lastUploadAt = time.Now()
 
 		urlReplacements[a.AssetURL] = newURL
 		logger.Info("uploaded asset", "old", a.AssetURL, "new", newURL)
@@ -1125,11 +1237,15 @@ func Restore(ctx context.Context, g *GitHubClient, repo repository.Repository, i
 			}
 			newBody := replaceURLs(pr.GetBody(), urlReplacements)
 			if newBody == pr.GetBody() {
+				// No uploaded URL remains in the body, so this location is
+				// already up to date.
+				updatedLocs[loc] = true
 				continue
 			}
 			if _, updateErr := g.EditPullRequest(ctx, owner, repoName, loc.PRNumber, &github.PullRequest{Body: github.Ptr(newBody)}); updateErr != nil {
 				logger.Warn("failed to update PR body", "pr", loc.PRNumber, "err", updateErr)
 			} else {
+				updatedLocs[loc] = true
 				logger.Info("updated PR body", "pr", loc.PRNumber)
 			}
 
@@ -1152,6 +1268,8 @@ func Restore(ctx context.Context, g *GitHubClient, repo repository.Repository, i
 			}
 			newBody := replaceURLs(comment.GetBody(), urlReplacements)
 			if newBody == comment.GetBody() {
+				// No uploaded URL remains in the comment, so it is already up to date.
+				updatedLocs[loc] = true
 				continue
 			}
 			if _, updateErr := gh.EditIssueComment(ctx, g, repo, comment, newBody); updateErr != nil {
@@ -1160,6 +1278,7 @@ func Restore(ctx context.Context, g *GitHubClient, repo repository.Repository, i
 				// Reflect the edit in the (possibly cached) comment so a later
 				// URL-based fallback does not re-match this already-updated comment.
 				comment.Body = new(newBody)
+				updatedLocs[loc] = true
 				logger.Info("updated issue comment", "id", comment.GetID())
 			}
 
@@ -1182,6 +1301,8 @@ func Restore(ctx context.Context, g *GitHubClient, repo repository.Repository, i
 			}
 			newBody := replaceURLs(comment.GetBody(), urlReplacements)
 			if newBody == comment.GetBody() {
+				// No uploaded URL remains in the comment, so it is already up to date.
+				updatedLocs[loc] = true
 				continue
 			}
 			if _, updateErr := gh.EditPullRequestComment(ctx, g, repo, comment, newBody); updateErr != nil {
@@ -1190,6 +1311,7 @@ func Restore(ctx context.Context, g *GitHubClient, repo repository.Repository, i
 				// Reflect the edit in the (possibly cached) comment so a later
 				// URL-based fallback does not re-match this already-updated comment.
 				comment.Body = new(newBody)
+				updatedLocs[loc] = true
 				logger.Info("updated review comment", "id", comment.GetID())
 			}
 		}
@@ -1205,8 +1327,68 @@ func Restore(ctx context.Context, g *GitHubClient, repo repository.Repository, i
 	return nil
 }
 
-// replaceURLs replaces all occurrences of old asset URLs in body with their
-// mapped new URLs.
+// locKey identifies a single restore target: a PR body or a specific comment
+// within a PR. The source LocationID may differ from the destination after a
+// migration; the restore resolves the live ID during its precheck.
+type locKey struct {
+	PRNumber   int
+	Location   AssetLocation
+	LocationID int64
+}
+
+// errDstLocationNotFound marks a destination location (issue or review comment)
+// that was confirmed absent: neither its recorded ID nor a content-based search
+// found it. It is permanent (not transient), so the caller can drop the location
+// instead of keeping it for a --continue retry.
+var errDstLocationNotFound = errors.New("destination location not found")
+
+// resumeAssetPending reports whether an asset entry still needs work and must be
+// kept in the resume metadata. It reasons per metadata entry (location + URL)
+// rather than per URL, because a URL can appear at several locations that finish
+// independently.
+//
+// Keep the asset when:
+//   - its location outcome is unknown/transient (unresolvedLocs) and it was not
+//     later applied this run; or
+//   - the old URL is present at a resolved location but the upload or the
+//     destination edit for that location did not complete.
+//
+// Omit it when the location is confirmed absent, when the old URL is not present
+// at a resolved location, or when it was uploaded and its location was edited
+// (or confirmed to already be clean) this run.
+func resumeAssetPending(
+	key locKey,
+	url string,
+	locResolved map[locKey]bool,
+	locURLPresent map[locKey]map[string]bool,
+	unresolvedLocs map[locKey]bool,
+	urlReplacements map[string]string,
+	updatedLocs map[locKey]bool,
+) bool {
+	// Unknown/transient precheck outcome: keep unless a later update this run
+	// (triggered because the same URL was uploaded for another location) proved
+	// the location is now done.
+	if unresolvedLocs[key] {
+		return !updatedLocs[key]
+	}
+	if locResolved[key] {
+		if !locURLPresent[key][url] {
+			// Old URL absent at the destination: nothing to restore here.
+			return false
+		}
+		if _, uploaded := urlReplacements[url]; !uploaded {
+			// The asset was never uploaded this run, so it still needs work.
+			return true
+		}
+		// Uploaded: done only once this location's content was edited.
+		return !updatedLocs[key]
+	}
+	// Neither resolved nor unresolved: the location was confirmed permanently
+	// absent (404 / not found). Its work is unrestorable, so drop it.
+	return false
+}
+
+
 func replaceURLs(body string, replacements map[string]string) string {
 	for oldURL, newURL := range replacements {
 		body = strings.ReplaceAll(body, oldURL, newURL)
@@ -1264,39 +1446,41 @@ func resolveDstLocationURL(ctx context.Context, g *GitHubClient, repo repository
 
 // resolveDstLocationBody resolves the destination body or comment text for the
 // given location, using the same ID lookup and content-based fallback as the
-// update step.
-func resolveDstLocationBody(ctx context.Context, g *GitHubClient, repo repository.Repository, cache *commentCache, prNumber int, location AssetLocation, locationID int64, oldURLs map[string]bool) (string, error) {
+// update step. It also returns the resolved destination location ID (the live
+// comment ID, which may differ from the source after a migration; 0 for a PR
+// body) so callers can record where the location actually lives.
+func resolveDstLocationBody(ctx context.Context, g *GitHubClient, repo repository.Repository, cache *commentCache, prNumber int, location AssetLocation, locationID int64, oldURLs map[string]bool) (string, int64, error) {
 	switch location {
 	case LocationIssueComment:
 		comment, err := gh.GetIssueComment(ctx, g, repo, locationID)
 		if err != nil {
 			comment, err = findIssueCommentByURLs(ctx, cache, prNumber, oldURLs)
 			if err != nil {
-				return "", err
+				return "", 0, err
 			}
 			if comment == nil {
-				return "", fmt.Errorf("destination issue comment not found")
+				return "", 0, fmt.Errorf("destination issue comment %d not found: %w", locationID, errDstLocationNotFound)
 			}
 		}
-		return comment.GetBody(), nil
+		return comment.GetBody(), comment.GetID(), nil
 	case LocationReviewComment:
 		comment, err := gh.GetPullRequestComment(ctx, g, repo, locationID)
 		if err != nil {
 			comment, err = findReviewCommentByURLs(ctx, cache, prNumber, oldURLs)
 			if err != nil {
-				return "", err
+				return "", 0, err
 			}
 			if comment == nil {
-				return "", fmt.Errorf("destination review comment not found")
+				return "", 0, fmt.Errorf("destination review comment %d not found: %w", locationID, errDstLocationNotFound)
 			}
 		}
-		return comment.GetBody(), nil
+		return comment.GetBody(), comment.GetID(), nil
 	default:
-		pr, err := gh.GetPullRequest(ctx, g, repo, prNumber)
+		pr, err := cache.getPullRequest(ctx, prNumber)
 		if err != nil {
-			return "", err
+			return "", 0, err
 		}
-		return pr.GetBody(), nil
+		return pr.GetBody(), 0, nil
 	}
 }
 
@@ -1328,8 +1512,17 @@ type commentCache struct {
 	g    *GitHubClient
 	repo repository.Repository
 
+	pullRequests   map[int]*pullRequestResult
 	issueComments  map[int][]*github.IssueComment
 	reviewComments map[int][]*github.PullRequestComment
+}
+
+// pullRequestResult memoizes a single PR fetch, caching both the successful PR
+// and any error (e.g. a 404 for a PR that no longer exists) so repeated lookups
+// do not re-issue the request.
+type pullRequestResult struct {
+	pr  *github.PullRequest
+	err error
 }
 
 // newCommentCache creates an empty comment cache bound to a client and repo.
@@ -1337,9 +1530,23 @@ func newCommentCache(g *GitHubClient, repo repository.Repository) *commentCache 
 	return &commentCache{
 		g:              g,
 		repo:           repo,
+		pullRequests:   make(map[int]*pullRequestResult),
 		issueComments:  make(map[int][]*github.IssueComment),
 		reviewComments: make(map[int][]*github.PullRequestComment),
 	}
+}
+
+// getPullRequest returns the PR, fetching it once per number and memoizing both
+// success and failure. Caching the error lets callers gate on PR reachability
+// (skipping every location on a missing PR) without re-issuing a failing request
+// for each location.
+func (c *commentCache) getPullRequest(ctx context.Context, prNumber int) (*github.PullRequest, error) {
+	if r, ok := c.pullRequests[prNumber]; ok {
+		return r.pr, r.err
+	}
+	pr, err := gh.GetPullRequest(ctx, c.g, c.repo, prNumber)
+	c.pullRequests[prNumber] = &pullRequestResult{pr: pr, err: err}
+	return pr, err
 }
 
 // listIssueComments returns the PR's issue comments, fetching them once per PR
