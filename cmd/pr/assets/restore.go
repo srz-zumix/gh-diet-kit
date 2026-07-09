@@ -19,6 +19,7 @@ func NewRestoreCmd() *cobra.Command {
 	var repoFlag string
 	var inputDirFlag string
 	var metadataFileFlag string
+	var continueFlag bool
 	var prFlag []int
 	var dryRunFlag bool
 	var browserStateFlag string
@@ -84,9 +85,20 @@ Example:
 				}
 			}
 
+			// --continue resumes from the metadata.restored.json written by a
+			// previous restore, so already-migrated comments are not re-searched.
+			// It is mutually exclusive with an explicit --metadata-file.
+			if continueFlag && metadataFileFlag != "" {
+				return fmt.Errorf("--continue and --metadata-file cannot be used together")
+			}
+
 			metaPath := metadataFileFlag
 			if metaPath == "" {
-				metaPath = filepath.Join(inputDirFlag, "metadata.json")
+				metaFile := "metadata.json"
+				if continueFlag {
+					metaFile = assets.RestoredMetadataFilename
+				}
+				metaPath = filepath.Join(inputDirFlag, metaFile)
 			}
 
 			opts := assets.RestoreOptions{
@@ -110,6 +122,7 @@ Example:
 	f.StringVarP(&repoFlag, "repo", "R", "", "Repository in \"[HOST/]OWNER/REPO\" format (default: current repository)")
 	f.StringVar(&inputDirFlag, "input-dir", "./pr-assets", "Directory containing the downloaded asset files")
 	f.StringVar(&metadataFileFlag, "metadata-file", "", "Path to metadata.json (default: <input-dir>/metadata.json)")
+	f.BoolVar(&continueFlag, "continue", false, "Resume from <input-dir>/"+assets.RestoredMetadataFilename+" written by a previous restore (mutually exclusive with --metadata-file)")
 	f.IntSliceVar(&prFlag, "pr", nil, "PR numbers to restore (repeatable; default: all PRs)")
 	f.BoolVarP(&dryRunFlag, "dryrun", "n", false, "Preview uploads and replacements without making any changes")
 	f.StringVar(&browserStateFlag, "browser-state", "", "Path to the Playwright browser state file for session persistence (default: <user-config-dir>/gh-diet-kit/playwright-state.json)")
