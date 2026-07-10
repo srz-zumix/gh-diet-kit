@@ -897,6 +897,10 @@ func Restore(ctx context.Context, g *GitHubClient, repo repository.Repository, i
 	// Track the old asset URLs found at each location so a migrated comment can
 	// be located by content when its original ID is no longer valid.
 	locsByKey := make(map[locKey]map[string]bool)
+	// Record the source PR URL per location so dry-run logging can report the
+	// original location the asset was recorded at, independent of which asset
+	// entry a reused URL happens to resolve to.
+	prURLByLoc := make(map[locKey]string)
 	for _, a := range meta.Assets {
 		if len(prFilter) > 0 && !prFilter[a.PRNumber] {
 			continue
@@ -906,6 +910,7 @@ func Restore(ctx context.Context, g *GitHubClient, repo repository.Repository, i
 			locsByKey[key] = make(map[string]bool)
 		}
 		locsByKey[key][a.AssetURL] = true
+		prURLByLoc[key] = a.PRURL
 	}
 
 	// Cache PR comments so URL-based fallback lookups list each PR's comments at
@@ -1102,6 +1107,9 @@ func Restore(ctx context.Context, g *GitHubClient, repo repository.Repository, i
 	// on demand the first time the URL needs to be rewritten at a location.
 	urlToAsset := make(map[string]*PRAsset)
 	for _, a := range meta.Assets {
+		if err := ctx.Err(); err != nil {
+			return err
+		}
 		if len(prFilter) > 0 && !prFilter[a.PRNumber] {
 			continue
 		}
@@ -1211,14 +1219,11 @@ func Restore(ctx context.Context, g *GitHubClient, repo repository.Repository, i
 
 		if opts.DryRun {
 			dstLoc := resolveDstLocationURL(ctx, g, repo, cache, loc.PRNumber, loc.Location, loc.LocationID, present)
+			srcLoc := locationURL(prURLByLoc[loc], loc.Location, loc.LocationID)
 			for oldURL := range present {
 				newURL, ok := urlReplacements[oldURL]
 				if !ok {
 					continue
-				}
-				srcLoc := ""
-				if a, ok := urlToAsset[oldURL]; ok {
-					srcLoc = locationURL(a.PRURL, loc.Location, loc.LocationID)
 				}
 				logger.Info("dry-run: would replace URL",
 					"src_location", srcLoc,
