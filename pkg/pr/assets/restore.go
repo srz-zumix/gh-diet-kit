@@ -1091,28 +1091,40 @@ func Restore(ctx context.Context, g *GitHubClient, repo repository.Repository, i
 	}
 
 	// Pace uploads to avoid GitHub's secondary rate limit. lastUploadAt tracks
-	// the previous upload so the loop can enforce a minimum gap.
+	// the previous upload so uploads can enforce a minimum gap.
 	uploadDelay := opts.UploadDelay
 	if uploadDelay <= 0 {
 		uploadDelay = DefaultUploadDelay
 	}
 	var lastUploadAt time.Time
 
-	// Build URL replacement map: old asset URL → new CDN URL.
-	// urlReplacements was declared earlier so the deferred result writer can read it.
+	// Map each in-scope asset URL to a metadata entry so its file can be uploaded
+	// on demand the first time the URL needs to be rewritten at a location.
+	urlToAsset := make(map[string]*PRAsset)
 	for _, a := range meta.Assets {
-		if err := ctx.Err(); err != nil {
-			return err
-		}
 		if len(prFilter) > 0 && !prFilter[a.PRNumber] {
 			continue
 		}
-		if !restoreURLs[a.AssetURL] {
+		if _, ok := urlToAsset[a.AssetURL]; ok {
 			continue
 		}
-		if a.LocalFile == "" {
-			logger.Warn("asset has no local file, skipping", "url", a.AssetURL)
-			continue
+		urlToAsset[a.AssetURL] = a
+	}
+
+	// ensureUploaded uploads the asset for oldURL the first time it is needed and
+	// memoizes the result in urlReplacements, so a URL reused across locations is
+	// uploaded only once. It returns (newURL, true, nil) on success,
+	// ("", false, nil) when the asset cannot be uploaded (skipped and left for a
+	// --continue retry), and a non-nil error only for fatal conditions (context
+	// canceled or an unrecoverable browser crash) that must abort the restore.
+	ensureUploaded := func(oldURL string) (string, bool, error) {
+		if newURL, ok := urlReplacements[oldURL]; ok {
+			return newURL, true, nil
+		}
+		a, ok := urlToAsset[oldURL]
+		if !ok || a.LocalFile == "" {
+			logger.Warn("asset has no local file, skipping", "url", oldURL)
+			return "", false, nil
 		}
 		// Normalize the path, then reject absolute paths and any path that
 		// starts with ".." (upward traversal). This is more precise than a
@@ -1121,27 +1133,19 @@ func Restore(ctx context.Context, g *GitHubClient, repo repository.Repository, i
 		cleanedFile := filepath.Clean(a.LocalFile)
 		if filepath.IsAbs(cleanedFile) || cleanedFile == ".." || strings.HasPrefix(cleanedFile, ".."+string(filepath.Separator)) {
 			logger.Warn("asset local file path is not allowed, skipping", "file", a.LocalFile)
-			continue
+			return "", false, nil
 		}
 		localPath := filepath.Join(inputDir, cleanedFile)
 		if _, statErr := os.Stat(localPath); statErr != nil {
 			logger.Warn("local file not found, skipping", "file", localPath)
-			continue
+			return "", false, nil
 		}
 
 		if opts.DryRun {
-			if _, alreadyDone := urlReplacements[a.AssetURL]; !alreadyDone {
-				urlReplacements[a.AssetURL] = fmt.Sprintf("(dry-run:%s)", a.Filename)
-				logger.Info("dry-run: would upload", "file", localPath, "filename", a.Filename)
-			}
-			continue
-		}
-
-		// Skip re-uploading an asset whose source URL has already been processed.
-		// The same AssetURL can appear across multiple PR locations (e.g. a reused
-		// image), but we only need to upload it once.
-		if _, alreadyDone := urlReplacements[a.AssetURL]; alreadyDone {
-			continue
+			newURL := fmt.Sprintf("(dry-run:%s)", a.Filename)
+			urlReplacements[oldURL] = newURL
+			logger.Info("dry-run: would upload", "file", localPath, "filename", a.Filename)
+			return newURL, true, nil
 		}
 
 		// Pace uploads to avoid tripping GitHub's secondary rate limit.
@@ -1149,7 +1153,7 @@ func Restore(ctx context.Context, g *GitHubClient, repo repository.Repository, i
 			if wait := uploadDelay - time.Since(lastUploadAt); wait > 0 {
 				select {
 				case <-ctx.Done():
-					return ctx.Err()
+					return "", false, ctx.Err()
 				case <-time.After(wait):
 				}
 			}
@@ -1162,72 +1166,69 @@ func Restore(ctx context.Context, g *GitHubClient, repo repository.Repository, i
 		if uploadErr != nil && isPageClosedErr(uploadErr) {
 			logger.Warn("browser session lost, recovering", "file", localPath, "err", uploadErr)
 			if recErr := uploader.Recover(ctx, owner, repoName); recErr != nil {
-				return fmt.Errorf("recover browser session after crash: %w", recErr)
+				return "", false, fmt.Errorf("recover browser session after crash: %w", recErr)
 			}
 			newURL, uploadErr = uploader.Upload(ctx, localPath, a.Filename)
 		}
 		if uploadErr != nil {
 			logger.Warn("upload failed, skipping", "file", localPath, "err", uploadErr)
-			continue
+			return "", false, nil
 		}
 		// Only record the timestamp after a successful upload so a skipped or
 		// failed upload does not pace (delay) the next one.
 		lastUploadAt = time.Now()
-
-		urlReplacements[a.AssetURL] = newURL
-		logger.Info("uploaded asset", "old", a.AssetURL, "new", newURL)
-	}
-	if len(urlReplacements) == 0 {
-		logger.Info("no assets were successfully uploaded")
-		return nil
+		urlReplacements[oldURL] = newURL
+		logger.Info("uploaded asset", "old", oldURL, "new", newURL)
+		return newURL, true, nil
 	}
 
-	// Group upload results by PR + location to minimise API calls.
-	// Track the old asset URLs found at each location so a migrated comment can
-	// be located by content when its original ID is no longer valid.
-	locsToUpdate := make(map[locKey]map[string]bool)
-	for _, a := range meta.Assets {
-		if len(prFilter) > 0 && !prFilter[a.PRNumber] {
+	// Walk each resolved location and, for every asset URL still present there,
+	// upload it on demand (only if not already uploaded) and then rewrite the
+	// destination body/comment. Uploading lazily per location means a file is
+	// only uploaded when its URL actually needs to be rewritten, instead of
+	// uploading everything up front.
+	for loc, present := range locURLPresent {
+		if err := ctx.Err(); err != nil {
+			return err
+		}
+		if len(present) == 0 {
 			continue
 		}
-		if _, ok := urlReplacements[a.AssetURL]; !ok {
+		anyUploaded := false
+		for oldURL := range present {
+			_, ok, upErr := ensureUploaded(oldURL)
+			if upErr != nil {
+				return upErr
+			}
+			if ok {
+				anyUploaded = true
+			}
+		}
+		if !anyUploaded {
+			// Nothing could be uploaded for this location; leave it for a retry.
 			continue
 		}
-		key := locKey{a.PRNumber, a.Location, a.LocationID}
-		if locsToUpdate[key] == nil {
-			locsToUpdate[key] = make(map[string]bool)
-		}
-		locsToUpdate[key][a.AssetURL] = true
-	}
 
-	if opts.DryRun {
-		// Cache resolved destination location URLs to avoid duplicate API calls
-		// when several assets share the same comment.
-		dstURLCache := make(map[locKey]string)
-		for _, a := range meta.Assets {
-			if len(prFilter) > 0 && !prFilter[a.PRNumber] {
-				continue
+		if opts.DryRun {
+			dstLoc := resolveDstLocationURL(ctx, g, repo, cache, loc.PRNumber, loc.Location, loc.LocationID, present)
+			for oldURL := range present {
+				newURL, ok := urlReplacements[oldURL]
+				if !ok {
+					continue
+				}
+				srcLoc := ""
+				if a, ok := urlToAsset[oldURL]; ok {
+					srcLoc = locationURL(a.PRURL, loc.Location, loc.LocationID)
+				}
+				logger.Info("dry-run: would replace URL",
+					"src_location", srcLoc,
+					"dst_location", dstLoc,
+					"old", oldURL, "new", newURL)
 			}
-			newURL, ok := urlReplacements[a.AssetURL]
-			if !ok {
-				continue
-			}
-			key := locKey{a.PRNumber, a.Location, a.LocationID}
-			dstLoc, cached := dstURLCache[key]
-			if !cached {
-				dstLoc = resolveDstLocationURL(ctx, g, repo, cache, a.PRNumber, a.Location, a.LocationID, locsToUpdate[key])
-				dstURLCache[key] = dstLoc
-			}
-			logger.Info("dry-run: would replace URL",
-				"src_location", locationURL(a.PRURL, a.Location, a.LocationID),
-				"dst_location", dstLoc,
-				"old", a.AssetURL, "new", newURL)
+			continue
 		}
-		return nil
-	}
 
-	// Apply URL replacements to each body / comment.
-	for loc, oldURLs := range locsToUpdate {
+		// Apply URL replacements to this body / comment.
 		switch loc.Location {
 		case LocationBody:
 			pr, fetchErr := gh.GetPullRequest(ctx, g, repo, loc.PRNumber)
@@ -1256,7 +1257,7 @@ func Restore(ctx context.Context, g *GitHubClient, repo repository.Repository, i
 				// migrated and GitHub re-assigned comment IDs). Fall back to
 				// searching the PR's comments for one that contains the old URL.
 				logger.Warn("failed to fetch issue comment, searching by content", "id", loc.LocationID, "pr", loc.PRNumber, "err", fetchErr)
-				comment, fetchErr = findIssueCommentByURLs(ctx, cache, loc.PRNumber, oldURLs)
+				comment, fetchErr = findIssueCommentByURLs(ctx, cache, loc.PRNumber, present)
 				if fetchErr != nil {
 					logger.Warn("failed to search issue comment", "id", loc.LocationID, "pr", loc.PRNumber, "err", fetchErr)
 					continue
@@ -1289,7 +1290,7 @@ func Restore(ctx context.Context, g *GitHubClient, repo repository.Repository, i
 				// migrated and GitHub re-assigned comment IDs). Fall back to
 				// searching the PR's comments for one that contains the old URL.
 				logger.Warn("failed to fetch review comment, searching by content", "id", loc.LocationID, "pr", loc.PRNumber, "err", fetchErr)
-				comment, fetchErr = findReviewCommentByURLs(ctx, cache, loc.PRNumber, oldURLs)
+				comment, fetchErr = findReviewCommentByURLs(ctx, cache, loc.PRNumber, present)
 				if fetchErr != nil {
 					logger.Warn("failed to search review comment", "id", loc.LocationID, "pr", loc.PRNumber, "err", fetchErr)
 					continue
@@ -1315,6 +1316,15 @@ func Restore(ctx context.Context, g *GitHubClient, repo repository.Repository, i
 				logger.Info("updated review comment", "id", comment.GetID())
 			}
 		}
+	}
+
+	if opts.DryRun {
+		return nil
+	}
+
+	if len(urlReplacements) == 0 {
+		logger.Info("no assets were successfully uploaded")
+		return nil
 	}
 
 	if opts.ClearCache {
@@ -1387,7 +1397,6 @@ func resumeAssetPending(
 	// absent (404 / not found). Its work is unrestorable, so drop it.
 	return false
 }
-
 
 func replaceURLs(body string, replacements map[string]string) string {
 	for oldURL, newURL := range replacements {
