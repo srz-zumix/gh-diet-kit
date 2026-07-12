@@ -910,7 +910,11 @@ func Restore(ctx context.Context, g *GitHubClient, repo repository.Repository, i
 			locsByKey[key] = make(map[string]bool)
 		}
 		locsByKey[key][a.AssetURL] = true
-		prURLByLoc[key] = a.PRURL
+		// Keep the first non-empty PR URL for the location; do not let a later
+		// duplicate entry with an empty PRURL erase it.
+		if prURLByLoc[key] == "" {
+			prURLByLoc[key] = a.PRURL
+		}
 	}
 
 	// Cache PR comments so URL-based fallback lookups list each PR's comments at
@@ -1232,8 +1236,20 @@ func Restore(ctx context.Context, g *GitHubClient, repo repository.Repository, i
 			continue
 		}
 
+		// Restrict content-based fallback lookups (and dry-run destination
+		// resolution) to URLs actually uploaded this run. Matching on a
+		// non-uploaded URL could select the wrong comment, produce a no-op
+		// replaceURLs, and wrongly mark the location updated (dropping it from
+		// the resume file). anyUploaded guarantees this set is non-empty.
+		uploadedURLs := make(map[string]bool)
+		for oldURL := range present {
+			if _, ok := urlReplacements[oldURL]; ok {
+				uploadedURLs[oldURL] = true
+			}
+		}
+
 		if opts.DryRun {
-			dstLoc := resolveDstLocationURL(ctx, g, repo, cache, loc.PRNumber, loc.Location, loc.LocationID, present)
+			dstLoc := resolveDstLocationURL(ctx, g, repo, cache, loc.PRNumber, loc.Location, loc.LocationID, uploadedURLs)
 			srcLoc := locationURL(prURLByLoc[loc], loc.Location, loc.LocationID)
 			for oldURL := range present {
 				newURL, ok := urlReplacements[oldURL]
@@ -1277,7 +1293,7 @@ func Restore(ctx context.Context, g *GitHubClient, repo repository.Repository, i
 				// migrated and GitHub re-assigned comment IDs). Fall back to
 				// searching the PR's comments for one that contains the old URL.
 				logger.Warn("failed to fetch issue comment, searching by content", "id", loc.LocationID, "pr", loc.PRNumber, "err", fetchErr)
-				comment, fetchErr = findIssueCommentByURLs(ctx, cache, loc.PRNumber, present)
+				comment, fetchErr = findIssueCommentByURLs(ctx, cache, loc.PRNumber, uploadedURLs)
 				if fetchErr != nil {
 					logger.Warn("failed to search issue comment", "id", loc.LocationID, "pr", loc.PRNumber, "err", fetchErr)
 					continue
@@ -1310,7 +1326,7 @@ func Restore(ctx context.Context, g *GitHubClient, repo repository.Repository, i
 				// migrated and GitHub re-assigned comment IDs). Fall back to
 				// searching the PR's comments for one that contains the old URL.
 				logger.Warn("failed to fetch review comment, searching by content", "id", loc.LocationID, "pr", loc.PRNumber, "err", fetchErr)
-				comment, fetchErr = findReviewCommentByURLs(ctx, cache, loc.PRNumber, present)
+				comment, fetchErr = findReviewCommentByURLs(ctx, cache, loc.PRNumber, uploadedURLs)
 				if fetchErr != nil {
 					logger.Warn("failed to search review comment", "id", loc.LocationID, "pr", loc.PRNumber, "err", fetchErr)
 					continue
