@@ -1113,10 +1113,18 @@ func Restore(ctx context.Context, g *GitHubClient, repo repository.Repository, i
 		if len(prFilter) > 0 && !prFilter[a.PRNumber] {
 			continue
 		}
-		if _, ok := urlToAsset[a.AssetURL]; ok {
+		// Multiple metadata entries can share one AssetURL (a reused image), and
+		// older/incremental dumps may leave LocalFile empty for some of them.
+		// Keep the first entry, but upgrade to a later one when the stored entry
+		// has no local file and the later entry does, so a usable file is not
+		// skipped just because an empty-LocalFile duplicate was seen first.
+		existing, ok := urlToAsset[a.AssetURL]
+		if ok && existing.LocalFile != "" {
 			continue
 		}
-		urlToAsset[a.AssetURL] = a
+		if !ok || a.LocalFile != "" {
+			urlToAsset[a.AssetURL] = a
+		}
 	}
 
 	// ensureUploaded uploads the asset for oldURL the first time it is needed and
@@ -1130,7 +1138,14 @@ func Restore(ctx context.Context, g *GitHubClient, repo repository.Repository, i
 			return newURL, true, nil
 		}
 		a, ok := urlToAsset[oldURL]
-		if !ok || a.LocalFile == "" {
+		if !ok {
+			// Unreachable in normal operation: every URL reached here comes from
+			// the same metadata (and prFilter) used to build urlToAsset. Log it
+			// distinctly so an invariant regression is easy to spot.
+			logger.Warn("asset URL missing from upload index, skipping", "url", oldURL)
+			return "", false, nil
+		}
+		if a.LocalFile == "" {
 			logger.Warn("asset has no local file, skipping", "url", oldURL)
 			return "", false, nil
 		}
