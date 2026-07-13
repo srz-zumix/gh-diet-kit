@@ -1107,29 +1107,32 @@ func Restore(ctx context.Context, g *GitHubClient, repo repository.Repository, i
 	}
 	var lastUploadAt time.Time
 
-	// Map each in-scope asset URL to a metadata entry so its file can be uploaded
-	// on demand the first time the URL needs to be rewritten at a location.
-	urlToAsset := make(map[string]*PRAsset)
+	// Map each asset URL to every metadata entry that references it so its file
+	// can be uploaded on demand the first time the URL needs to be rewritten at a
+	// location. The same URL can appear in several entries (a reused image), and
+	// older/incremental dumps may leave some entries with an empty or stale
+	// LocalFile; keeping all candidates lets ensureUploaded fall back to a usable
+	// one. Candidates are collected across all PRs (not just prFilter), because
+	// the upload source is keyed by content and uploading from an out-of-scope
+	// entry's file does not modify that entry's PR.
+	urlToAssets := make(map[string][]*PRAsset)
 	for _, a := range meta.Assets {
 		if err := ctx.Err(); err != nil {
 			return err
 		}
-		if len(prFilter) > 0 && !prFilter[a.PRNumber] {
-			continue
-		}
-		// Multiple metadata entries can share one AssetURL (a reused image), and
-		// older/incremental dumps may leave LocalFile empty for some of them.
-		// Keep the first entry, but upgrade to a later one when the stored entry
-		// has no local file and the later entry does, so a usable file is not
-		// skipped just because an empty-LocalFile duplicate was seen first.
-		existing, ok := urlToAsset[a.AssetURL]
-		if ok && existing.LocalFile != "" {
-			continue
-		}
-		if !ok || a.LocalFile != "" {
-			urlToAsset[a.AssetURL] = a
-		}
+		urlToAssets[a.AssetURL] = append(urlToAssets[a.AssetURL], a)
 	}
+
+	// picked memoizes the chosen usable candidate per URL (including "none
+	// usable") so locations that reference the same URL do not re-scan the
+	// filesystem or re-log. Candidate selection is deterministic; upload success
+	// is tracked separately in urlReplacements.
+	type usableAsset struct {
+		asset     *PRAsset
+		localPath string
+		ok        bool
+	}
+	picked := make(map[string]usableAsset)
 
 	// ensureUploaded uploads the asset for oldURL the first time it is needed and
 	// memoizes the result in urlReplacements, so a URL reused across locations is
@@ -1141,32 +1144,39 @@ func Restore(ctx context.Context, g *GitHubClient, repo repository.Repository, i
 		if newURL, ok := urlReplacements[oldURL]; ok {
 			return newURL, true, nil
 		}
-		a, ok := urlToAsset[oldURL]
-		if !ok {
+		candidates, ok := urlToAssets[oldURL]
+		if !ok || len(candidates) == 0 {
 			// Unreachable in normal operation: every URL reached here comes from
-			// the same metadata (and prFilter) used to build urlToAsset. Log it
-			// distinctly so an invariant regression is easy to spot.
+			// the same metadata used to build urlToAssets. Log it distinctly so
+			// an invariant regression is easy to spot.
 			logger.Warn("asset URL missing from upload index, skipping", "url", oldURL)
 			return "", false, nil
 		}
-		if a.LocalFile == "" {
-			logger.Warn("asset has no local file, skipping", "url", oldURL)
+		sel, memoed := picked[oldURL]
+		if !memoed {
+			// Pick the first candidate whose local file is present and safe to
+			// read. Trying each candidate avoids permanently skipping a URL when
+			// an earlier duplicate has an empty or stale LocalFile but a later
+			// one is usable.
+			for _, a := range candidates {
+				if a.LocalFile == "" {
+					continue
+				}
+				if p, good := resolveLocalPath(inputDir, a.LocalFile); good {
+					sel = usableAsset{asset: a, localPath: p, ok: true}
+					break
+				}
+			}
+			picked[oldURL] = sel
+			if !sel.ok {
+				logger.Warn("asset has no usable local file, skipping", "url", oldURL)
+			}
+		}
+		if !sel.ok {
 			return "", false, nil
 		}
-		// Normalize the path, then reject absolute paths and any path that
-		// starts with ".." (upward traversal). This is more precise than a
-		// raw strings.Contains check, which would wrongly reject legitimate
-		// filenames such as "foo..bar" or "..foo".
-		cleanedFile := filepath.Clean(a.LocalFile)
-		if filepath.IsAbs(cleanedFile) || cleanedFile == ".." || strings.HasPrefix(cleanedFile, ".."+string(filepath.Separator)) {
-			logger.Warn("asset local file path is not allowed, skipping", "file", a.LocalFile)
-			return "", false, nil
-		}
-		localPath := filepath.Join(inputDir, cleanedFile)
-		if _, statErr := os.Stat(localPath); statErr != nil {
-			logger.Warn("local file not found, skipping", "file", localPath)
-			return "", false, nil
-		}
+		a := sel.asset
+		localPath := sel.localPath
 
 		if opts.DryRun {
 			newURL := fmt.Sprintf("(dry-run:%s)", a.Filename)
@@ -1250,7 +1260,15 @@ func Restore(ctx context.Context, g *GitHubClient, repo repository.Repository, i
 
 		if opts.DryRun {
 			dstLoc := resolveDstLocationURL(ctx, g, repo, cache, loc.PRNumber, loc.Location, loc.LocationID, uploadedURLs)
-			srcLoc := locationURL(prURLByLoc[loc], loc.Location, loc.LocationID)
+			// Prefer the source PR URL recorded in metadata; fall back to
+			// reconstructing it from the dump's source repo so the log shows a
+			// complete URL instead of a bare "#issuecomment-..." anchor when
+			// PRURL is missing from the metadata.
+			srcPRURL := prURLByLoc[loc]
+			if srcPRURL == "" && meta.SourceRepo != "" {
+				srcPRURL = fmt.Sprintf("https://%s/pull/%d", meta.SourceRepo, loc.PRNumber)
+			}
+			srcLoc := locationURL(srcPRURL, loc.Location, loc.LocationID)
 			for oldURL := range present {
 				newURL, ok := urlReplacements[oldURL]
 				if !ok {
@@ -1439,6 +1457,25 @@ func replaceURLs(body string, replacements map[string]string) string {
 		body = strings.ReplaceAll(body, oldURL, newURL)
 	}
 	return body
+}
+
+// resolveLocalPath resolves a dump-relative local file path against inputDir and
+// reports whether it points to an existing regular file. It rejects absolute
+// paths and any path that starts with ".." (upward traversal). The traversal
+// check is more precise than a raw strings.Contains check, which would wrongly
+// reject legitimate filenames such as "foo..bar" or "..foo". It returns
+// (path, true) only when the file is safe and present.
+func resolveLocalPath(inputDir, localFile string) (string, bool) {
+	cleanedFile := filepath.Clean(localFile)
+	if filepath.IsAbs(cleanedFile) || cleanedFile == ".." || strings.HasPrefix(cleanedFile, ".."+string(filepath.Separator)) {
+		return "", false
+	}
+	localPath := filepath.Join(inputDir, cleanedFile)
+	info, statErr := os.Stat(localPath)
+	if statErr != nil || !info.Mode().IsRegular() {
+		return "", false
+	}
+	return localPath, true
 }
 
 // locationURL builds the HTML URL (with anchor) for the asset location within a
