@@ -910,9 +910,9 @@ func Restore(ctx context.Context, g *GitHubClient, repo repository.Repository, i
 			locsByKey[key] = make(map[string]bool)
 		}
 		locsByKey[key][a.AssetURL] = true
-		// Keep the first non-empty PR URL for the location; do not let a later
-		// duplicate entry with an empty PRURL erase it.
-		if prURLByLoc[key] == "" {
+		// Record only the first non-empty PR URL for the location; do not let a
+		// later duplicate entry with an empty PRURL erase it.
+		if prURLByLoc[key] == "" && a.PRURL != "" {
 			prURLByLoc[key] = a.PRURL
 		}
 	}
@@ -1332,7 +1332,7 @@ func Restore(ctx context.Context, g *GitHubClient, repo repository.Repository, i
 			} else {
 				// Reflect the edit in the (possibly cached) comment so a later
 				// URL-based fallback does not re-match this already-updated comment.
-				comment.Body = new(newBody)
+				comment.Body = github.Ptr(newBody)
 				updatedLocs[loc] = true
 				logger.Info("updated issue comment", "id", comment.GetID())
 			}
@@ -1365,7 +1365,7 @@ func Restore(ctx context.Context, g *GitHubClient, repo repository.Repository, i
 			} else {
 				// Reflect the edit in the (possibly cached) comment so a later
 				// URL-based fallback does not re-match this already-updated comment.
-				comment.Body = new(newBody)
+				comment.Body = github.Ptr(newBody)
 				updatedLocs[loc] = true
 				logger.Info("updated review comment", "id", comment.GetID())
 			}
