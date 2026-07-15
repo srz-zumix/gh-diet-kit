@@ -1134,6 +1134,11 @@ func Restore(ctx context.Context, g *GitHubClient, repo repository.Repository, i
 	}
 	picked := make(map[string]usableAsset)
 
+	// uploadFailed records URLs whose non-fatal upload failed in this run so a
+	// URL reused across locations is not retried (and re-logged) for every
+	// location. The memo is per-run only, so a fresh --continue run retries.
+	uploadFailed := make(map[string]bool)
+
 	// ensureUploaded uploads the asset for oldURL the first time it is needed and
 	// memoizes the result in urlReplacements, so a URL reused across locations is
 	// uploaded only once. It returns (newURL, true, nil) on success,
@@ -1143,6 +1148,11 @@ func Restore(ctx context.Context, g *GitHubClient, repo repository.Repository, i
 	ensureUploaded := func(oldURL string) (string, bool, error) {
 		if newURL, ok := urlReplacements[oldURL]; ok {
 			return newURL, true, nil
+		}
+		if uploadFailed[oldURL] {
+			// A previous location already failed to upload this URL in this run;
+			// skip and leave it for a --continue retry.
+			return "", false, nil
 		}
 		candidates, ok := urlToAssets[oldURL]
 		if !ok || len(candidates) == 0 {
@@ -1208,6 +1218,12 @@ func Restore(ctx context.Context, g *GitHubClient, repo repository.Repository, i
 			newURL, uploadErr = uploader.Upload(ctx, localPath, a.Filename)
 		}
 		if uploadErr != nil {
+			// Context cancellation/deadline is fatal: abort instead of recording
+			// a resumable skip.
+			if ctx.Err() != nil || errors.Is(uploadErr, context.Canceled) || errors.Is(uploadErr, context.DeadlineExceeded) {
+				return "", false, uploadErr
+			}
+			uploadFailed[oldURL] = true
 			logger.Warn("upload failed, skipping", "file", localPath, "err", uploadErr)
 			return "", false, nil
 		}
