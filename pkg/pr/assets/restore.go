@@ -1476,22 +1476,42 @@ func replaceURLs(body string, replacements map[string]string) string {
 }
 
 // resolveLocalPath resolves a dump-relative local file path against inputDir and
-// reports whether it points to an existing regular file. It rejects absolute
-// paths and any path that starts with ".." (upward traversal). The traversal
-// check is more precise than a raw strings.Contains check, which would wrongly
-// reject legitimate filenames such as "foo..bar" or "..foo". It returns
-// (path, true) only when the file is safe and present.
+// reports whether it points to an existing regular file contained in inputDir.
+// It first rejects absolute paths and lexical upward traversal via
+// filepath.IsLocal (which, unlike a raw strings.Contains check, still accepts
+// legitimate filenames such as "foo..bar" or "..foo"). It then resolves
+// symlinks and verifies the real path stays under inputDir, so a crafted dump
+// cannot escape via a symlinked entry (e.g. a file symlinked to an absolute
+// path outside the dump). It returns the symlink-resolved (path, true) only
+// when the file is safe and present.
 func resolveLocalPath(inputDir, localFile string) (string, bool) {
 	cleanedFile := filepath.Clean(localFile)
-	if filepath.IsAbs(cleanedFile) || cleanedFile == ".." || strings.HasPrefix(cleanedFile, ".."+string(filepath.Separator)) {
+	if !filepath.IsLocal(cleanedFile) {
 		return "", false
 	}
-	localPath := filepath.Join(inputDir, cleanedFile)
-	info, statErr := os.Stat(localPath)
+	absBase, err := filepath.Abs(inputDir)
+	if err != nil {
+		return "", false
+	}
+	// EvalSymlinks requires the paths to exist; a missing dump dir or file
+	// fails closed here, which is the desired behavior.
+	realBase, err := filepath.EvalSymlinks(absBase)
+	if err != nil {
+		return "", false
+	}
+	realPath, err := filepath.EvalSymlinks(filepath.Join(absBase, cleanedFile))
+	if err != nil {
+		return "", false
+	}
+	rel, err := filepath.Rel(realBase, realPath)
+	if err != nil || rel == ".." || strings.HasPrefix(rel, ".."+string(filepath.Separator)) {
+		return "", false
+	}
+	info, statErr := os.Stat(realPath)
 	if statErr != nil || !info.Mode().IsRegular() {
 		return "", false
 	}
-	return localPath, true
+	return realPath, true
 }
 
 // locationURL builds the HTML URL (with anchor) for the asset location within a
