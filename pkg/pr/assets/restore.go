@@ -1118,7 +1118,7 @@ func Restore(ctx context.Context, g *GitHubClient, repo repository.Repository, i
 	urlToAssets := make(map[string][]*PRAsset)
 	for _, a := range meta.Assets {
 		if err := ctx.Err(); err != nil {
-			return err
+			return fmt.Errorf("build upload index canceled: %w", err)
 		}
 		urlToAssets[a.AssetURL] = append(urlToAssets[a.AssetURL], a)
 	}
@@ -1476,14 +1476,16 @@ func replaceURLs(body string, replacements map[string]string) string {
 }
 
 // resolveLocalPath resolves a dump-relative local file path against inputDir and
-// reports whether it points to an existing regular file contained in inputDir.
-// It first rejects absolute paths and lexical upward traversal via
+// reports whether it points to an existing, readable regular file contained in
+// inputDir. It first rejects absolute paths and lexical upward traversal via
 // filepath.IsLocal (which, unlike a raw strings.Contains check, still accepts
 // legitimate filenames such as "foo..bar" or "..foo"). It then resolves
 // symlinks and verifies the real path stays under inputDir, so a crafted dump
 // cannot escape via a symlinked entry (e.g. a file symlinked to an absolute
-// path outside the dump). It returns the symlink-resolved (path, true) only
-// when the file is safe and present.
+// path outside the dump). Finally it opens the file to confirm it is readable,
+// so a present-but-unreadable candidate is skipped in favor of a usable
+// duplicate at selection time instead of failing later at upload. It returns
+// the symlink-resolved (path, true) only when the file is safe and present.
 func resolveLocalPath(inputDir, localFile string) (string, bool) {
 	cleanedFile := filepath.Clean(localFile)
 	if !filepath.IsLocal(cleanedFile) {
@@ -1511,6 +1513,13 @@ func resolveLocalPath(inputDir, localFile string) (string, bool) {
 	if statErr != nil || !info.Mode().IsRegular() {
 		return "", false
 	}
+	// Confirm the file is actually readable so an unreadable candidate does not
+	// block a usable duplicate for the same URL.
+	f, openErr := os.Open(realPath)
+	if openErr != nil {
+		return "", false
+	}
+	_ = f.Close()
 	return realPath, true
 }
 
