@@ -3211,7 +3211,7 @@ OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 ================================================================================
 Package: golang.org/x/sync/errgroup
 License: BSD-3-Clause
-URL: https://cs.opensource.google/go/x/sync/+/v0.20.0:LICENSE
+URL: https://cs.opensource.google/go/x/sync/+/v0.22.0:LICENSE
 ================================================================================
 Copyright 2009 The Go Authors.
 
