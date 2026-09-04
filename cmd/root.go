@@ -11,24 +11,21 @@ import (
 	"github.com/spf13/cobra"
 	"github.com/srz-zumix/gh-diet-kit/version"
 	"github.com/srz-zumix/go-gh-extension/pkg/actions"
-	"github.com/srz-zumix/go-gh-extension/pkg/gh/guardrails"
-	"github.com/srz-zumix/go-gh-extension/pkg/logger"
-)
-
-var (
-	logLevel string
-	readOnly bool
+	"github.com/srz-zumix/go-gh-extension/pkg/cmdflags"
 )
 
 var rootCmd = &cobra.Command{
-	Use:     "gh-diet-kit",
-	Short:   "A slim GitHub CLI extension based on gh-team-kit",
-	Long:    `A slim GitHub CLI extension based on gh-team-kit`,
+	Use:   "gh-diet-kit",
+	Short: "Slim down GitHub repositories by finding wasted storage",
+	Long: `gh-diet-kit is a GitHub CLI extension for putting your repositories on a diet.
+
+It helps you inspect and reduce repository storage usage:
+  - Detect dangling git objects (blobs, commits, branches) left on the remote
+    by squash/rebase merges, force-pushes, or closed unmerged pull requests.
+  - Detect large files and estimate the storage savings of migrating to Git LFS.
+  - Inspect the repository tree to find where storage is being consumed.
+  - Manage pull request assets (dump, list, restore).`,
 	Version: version.Version,
-	PersistentPreRun: func(cmd *cobra.Command, args []string) {
-		logger.SetLogLevel(logLevel)
-		guardrails.NewGuardrail(guardrails.ReadOnlyOption(readOnly))
-	},
 }
 
 func Execute() {
@@ -44,6 +41,5 @@ func init() {
 	if actions.IsRunsOn() {
 		rootCmd.SetErrPrefix(actions.GetErrorPrefix())
 	}
-	logger.AddCmdFlag(rootCmd, rootCmd.PersistentFlags(), &logLevel, "log-level", "L")
-	rootCmd.PersistentFlags().BoolVar(&readOnly, "read-only", false, "Run in read-only mode (prevent write operations)")
+	cmdflags.AddPersistentFlags(rootCmd)
 }
