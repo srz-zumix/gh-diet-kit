@@ -154,25 +154,26 @@ func TestNewAPIUploader_RejectsMissingRepositoryID(t *testing.T) {
 	}
 }
 
-func TestAllAssetsAPIUploadable(t *testing.T) {
+func TestAllSelectedAssetsAPIUploadable(t *testing.T) {
 	t.Run("all supported extensions and sizes", func(t *testing.T) {
 		dir := t.TempDir()
 		writeAssetFile(t, dir, "shot.png", "small")
 		meta := &DumpMetadata{Assets: []*PRAsset{
-			{Filename: "shot.png", LocalFile: "shot.png"},
+			{PRNumber: 1, AssetURL: "u1", Filename: "shot.png", LocalFile: "shot.png"},
 		}}
-		if !allAssetsAPIUploadable(meta, dir) {
-			t.Fatal("allAssetsAPIUploadable() = false, want true")
+		if !allSelectedAssetsAPIUploadable(meta, dir, nil) {
+			t.Fatal("allSelectedAssetsAPIUploadable() = false, want true")
 		}
 	})
 
-	t.Run("unsupported extension blocks the API-only path", func(t *testing.T) {
+	t.Run("unsupported extension with a usable file blocks the API-only path", func(t *testing.T) {
 		dir := t.TempDir()
+		writeAssetFile(t, dir, "notes.pdf", "data")
 		meta := &DumpMetadata{Assets: []*PRAsset{
-			{Filename: "notes.pdf"},
+			{PRNumber: 1, AssetURL: "u1", Filename: "notes.pdf", LocalFile: "notes.pdf"},
 		}}
-		if allAssetsAPIUploadable(meta, dir) {
-			t.Fatal("allAssetsAPIUploadable() = true, want false")
+		if allSelectedAssetsAPIUploadable(meta, dir, nil) {
+			t.Fatal("allSelectedAssetsAPIUploadable() = true, want false")
 		}
 	})
 
@@ -181,20 +182,61 @@ func TestAllAssetsAPIUploadable(t *testing.T) {
 		big := make([]byte, gh.MaxUserAttachmentImageBytes+1)
 		writeAssetFile(t, dir, "big.png", string(big))
 		meta := &DumpMetadata{Assets: []*PRAsset{
-			{Filename: "big.png", LocalFile: "big.png"},
+			{PRNumber: 1, AssetURL: "u1", Filename: "big.png", LocalFile: "big.png"},
 		}}
-		if allAssetsAPIUploadable(meta, dir) {
-			t.Fatal("allAssetsAPIUploadable() = true, want false")
+		if allSelectedAssetsAPIUploadable(meta, dir, nil) {
+			t.Fatal("allSelectedAssetsAPIUploadable() = true, want false")
 		}
 	})
 
 	t.Run("unresolvable local file does not block the API-only path", func(t *testing.T) {
 		dir := t.TempDir()
 		meta := &DumpMetadata{Assets: []*PRAsset{
-			{Filename: "shot.png", LocalFile: "missing.png"},
+			{PRNumber: 1, AssetURL: "u1", Filename: "shot.png", LocalFile: "missing.png"},
 		}}
-		if !allAssetsAPIUploadable(meta, dir) {
-			t.Fatal("allAssetsAPIUploadable() = false, want true")
+		if !allSelectedAssetsAPIUploadable(meta, dir, nil) {
+			t.Fatal("allSelectedAssetsAPIUploadable() = false, want true")
+		}
+	})
+
+	t.Run("no usable local file does not block even for an unsupported extension", func(t *testing.T) {
+		dir := t.TempDir()
+		meta := &DumpMetadata{Assets: []*PRAsset{
+			{PRNumber: 1, AssetURL: "u1", Filename: "notes.pdf"},
+		}}
+		if !allSelectedAssetsAPIUploadable(meta, dir, nil) {
+			t.Fatal("allSelectedAssetsAPIUploadable() = false, want true")
+		}
+	})
+
+	t.Run("unsupported asset in an unselected PR does not force a browser", func(t *testing.T) {
+		dir := t.TempDir()
+		writeAssetFile(t, dir, "shot.png", "small")
+		writeAssetFile(t, dir, "notes.pdf", "data")
+		meta := &DumpMetadata{Assets: []*PRAsset{
+			{PRNumber: 1, AssetURL: "u1", Filename: "shot.png", LocalFile: "shot.png"},
+			{PRNumber: 2, AssetURL: "u2", Filename: "notes.pdf", LocalFile: "notes.pdf"},
+		}}
+		if !allSelectedAssetsAPIUploadable(meta, dir, []int{1}) {
+			t.Fatal("allSelectedAssetsAPIUploadable() = false, want true (PR 2 is out of scope)")
+		}
+		if allSelectedAssetsAPIUploadable(meta, dir, []int{2}) {
+			t.Fatal("allSelectedAssetsAPIUploadable() = true, want false (PR 2 selected)")
+		}
+	})
+
+	t.Run("reused URL takes its file from the first usable cross-PR candidate", func(t *testing.T) {
+		dir := t.TempDir()
+		big := make([]byte, gh.MaxUserAttachmentImageBytes+1)
+		writeAssetFile(t, dir, "big.png", string(big))
+		// The selected PR entry has no usable local file; the same URL's file is
+		// supplied by an unselected PR entry (oversized), which upload would use.
+		meta := &DumpMetadata{Assets: []*PRAsset{
+			{PRNumber: 2, AssetURL: "shared", Filename: "big.png", LocalFile: "big.png"},
+			{PRNumber: 1, AssetURL: "shared", Filename: "big.png"},
+		}}
+		if allSelectedAssetsAPIUploadable(meta, dir, []int{1}) {
+			t.Fatal("allSelectedAssetsAPIUploadable() = true, want false (upload would use the oversized cross-PR file)")
 		}
 	})
 }

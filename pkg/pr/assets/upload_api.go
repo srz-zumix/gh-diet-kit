@@ -125,8 +125,8 @@ func (u *hybridUploader) Close() {
 // newRestoreUploader builds the uploader Restore uses for this run, honoring
 // opts.UploadMethod. For UploadMethodAuto it prefers the REST API and only
 // pays the cost of a browser launch (and a possible interactive login) when
-// the host is GitHub Enterprise Server or when metadata references a file the
-// API cannot accept.
+// the host is GitHub Enterprise Server or when an asset selected for this run
+// (respecting opts.PRNumbers) references a file the API cannot accept.
 //
 // The second return value is the resolved browser state file path, set only
 // when a browser uploader was actually constructed (empty for API-only runs).
@@ -179,7 +179,7 @@ func newRestoreUploader(ctx context.Context, g *GitHubClient, repo repository.Re
 		if err != nil {
 			return nil, "", err
 		}
-		if allAssetsAPIUploadable(meta, inputDir) {
+		if allSelectedAssetsAPIUploadable(meta, inputDir, opts.PRNumbers) {
 			return apiUploader, "", nil
 		}
 		browserUploader, err := newBrowserUploader()
@@ -204,20 +204,43 @@ func newAPIUploaderForRestore(ctx context.Context, g *GitHubClient, repo reposit
 	return NewAPIUploader(g, repo.Host, r.GetID())
 }
 
-// allAssetsAPIUploadable reports whether every asset in meta is one the REST
-// upload API would accept, so UploadMethodAuto can skip the browser launch
-// entirely. An asset whose local file cannot be resolved or stat'd is treated
-// as acceptable here (its own upload will simply be skipped later); this
-// function only judges whether known files rule out the API-only path.
-func allAssetsAPIUploadable(meta *DumpMetadata, inputDir string) bool {
+// allSelectedAssetsAPIUploadable reports whether the REST upload API can handle
+// every asset URL this run will actually upload, so UploadMethodAuto can skip
+// launching a browser. It mirrors Restore's upload-source selection so the
+// decision matches what the upload loop does:
+//
+//   - Only URLs referenced by the PRs selected via prNumbers can be restored
+//     (an empty prNumbers means all PRs), so unsupported assets in unselected
+//     PRs never force a browser launch.
+//   - For each such URL the file is taken from the first metadata entry across
+//     ALL PRs that has a usable local file (exactly as ensureUploaded does),
+//     because the upload source is keyed by content, not by the selected PR.
+//   - A URL with no usable local file is treated as acceptable, since its
+//     upload is skipped rather than routed through the browser.
+func allSelectedAssetsAPIUploadable(meta *DumpMetadata, inputDir string, prNumbers []int) bool {
+	prFilter := make(map[int]bool, len(prNumbers))
+	for _, n := range prNumbers {
+		prFilter[n] = true
+	}
+
+	// Index every entry by URL across all PRs so candidate selection matches the
+	// cross-PR fallback the upload loop performs.
+	urlToAssets := make(map[string][]*PRAsset)
 	for _, a := range meta.Assets {
-		if _, ok := gh.UserAttachmentSupported(a.Filename, -1); !ok {
-			return false
-		}
-		if a.LocalFile == "" {
+		urlToAssets[a.AssetURL] = append(urlToAssets[a.AssetURL], a)
+	}
+
+	checked := make(map[string]bool)
+	for _, a := range meta.Assets {
+		if len(prFilter) > 0 && !prFilter[a.PRNumber] {
 			continue
 		}
-		localPath, ok := resolveLocalPath(inputDir, a.LocalFile)
+		if checked[a.AssetURL] {
+			continue
+		}
+		checked[a.AssetURL] = true
+
+		sel, localPath, ok := firstUsableAssetCandidate(urlToAssets[a.AssetURL], inputDir)
 		if !ok {
 			continue
 		}
@@ -225,7 +248,7 @@ func allAssetsAPIUploadable(meta *DumpMetadata, inputDir string) bool {
 		if err != nil {
 			continue
 		}
-		if _, ok := gh.UserAttachmentSupported(a.Filename, fi.Size()); !ok {
+		if _, ok := gh.UserAttachmentSupported(sel.Filename, fi.Size()); !ok {
 			return false
 		}
 	}

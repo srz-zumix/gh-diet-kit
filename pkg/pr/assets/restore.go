@@ -869,7 +869,8 @@ type UploadMethod string
 
 const (
 	// UploadMethodAuto uses the REST upload API when the host and every asset
-	// support it, and otherwise falls back to browser automation.
+	// being restored in this run (respecting --pr filtering) support it, and
+	// otherwise falls back to browser automation for the assets the API rejects.
 	UploadMethodAuto UploadMethod = "auto"
 	// UploadMethodAPI uses only the REST upload API, failing outright on a host
 	// or file it does not support instead of falling back.
@@ -1226,14 +1227,8 @@ func Restore(ctx context.Context, g *GitHubClient, repo repository.Repository, i
 			// read. Trying each candidate avoids permanently skipping a URL when
 			// an earlier duplicate has an empty or stale LocalFile but a later
 			// one is usable.
-			for _, a := range candidates {
-				if a.LocalFile == "" {
-					continue
-				}
-				if p, good := resolveLocalPath(inputDir, a.LocalFile); good {
-					sel = usableAsset{asset: a, localPath: p, ok: true}
-					break
-				}
+			if a, p, good := firstUsableAssetCandidate(candidates, inputDir); good {
+				sel = usableAsset{asset: a, localPath: p, ok: true}
 			}
 			picked[oldURL] = sel
 			if !sel.ok {
@@ -1534,6 +1529,24 @@ func replaceURLs(body string, replacements map[string]string) string {
 		body = strings.ReplaceAll(body, oldURL, newURL)
 	}
 	return body
+}
+
+// firstUsableAssetCandidate returns the first asset among candidates whose
+// LocalFile is set and resolves to a readable file under inputDir, along with
+// its resolved path. It mirrors the candidate selection ensureUploaded performs
+// at upload time, so a URL that reuses the same asset across several metadata
+// entries is uploaded from the first usable duplicate. ok is false when no
+// candidate has a usable local file (its upload is later skipped).
+func firstUsableAssetCandidate(candidates []*PRAsset, inputDir string) (*PRAsset, string, bool) {
+	for _, a := range candidates {
+		if a.LocalFile == "" {
+			continue
+		}
+		if p, good := resolveLocalPath(inputDir, a.LocalFile); good {
+			return a, p, true
+		}
+	}
+	return nil, "", false
 }
 
 // resolveLocalPath resolves a dump-relative local file path against inputDir and
