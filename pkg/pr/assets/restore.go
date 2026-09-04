@@ -82,6 +82,22 @@ const uploaderInputID = "gh-diet-kit-file-input"
 // size; the timeout mainly guards against a hung page.
 const uploadPolicyTimeout = 60 * time.Second
 
+// ResolveBrowserStateFile returns stateFile unchanged when it is non-empty,
+// otherwise it computes the default Playwright browser state file path under
+// the user config directory. It is resolved lazily (only when a browser session
+// is actually needed) so that API-only runs never require a user config
+// directory, which may be unavailable in minimal/container environments.
+func ResolveBrowserStateFile(stateFile string) (string, error) {
+	if stateFile != "" {
+		return stateFile, nil
+	}
+	configDir, err := os.UserConfigDir()
+	if err != nil {
+		return "", fmt.Errorf("failed to determine user config directory: %w", err)
+	}
+	return filepath.Join(configDir, "gh-diet-kit", "playwright-state.json"), nil
+}
+
 // NewPlaywrightUploader creates a new PlaywrightUploader and launches a browser.
 // If stateFile does not exist, the browser is launched in headed mode so the user
 // can log in interactively. Otherwise it runs headlessly using the saved session.
@@ -872,13 +888,17 @@ type RestoreOptions struct {
 	UploadMethod UploadMethod
 	// StateFile is the path to the Playwright browser state file used for session
 	// persistence between runs. Only used when browser automation is active.
+	// An empty value resolves lazily to the default path (via
+	// ResolveBrowserStateFile) at the moment a browser session is launched, so
+	// API-only runs never require a user config directory.
 	StateFile string
 	// Headed forces the browser to run in headed (visible) mode even when a
 	// saved session file exists. Useful for debugging. Only used when browser
 	// automation is active.
 	Headed bool
 	// ClearCache deletes the saved browser session file after the restore
-	// completes successfully. Only used when browser automation is active.
+	// completes successfully. Only honored when this run actually launched a
+	// browser; it is a no-op for API-only uploads.
 	ClearCache bool
 	// UploadDelay is the minimum delay inserted before each asset upload to
 	// pace requests and avoid tripping GitHub's secondary rate limit. Zero uses
@@ -968,6 +988,7 @@ func Restore(ctx context.Context, g *GitHubClient, repo repository.Repository, i
 	// resolving the uploader first lets the user log in immediately instead of
 	// waiting for the precheck to finish before being prompted.
 	var uploader assetUploader
+	var browserStateFile string
 	if !opts.DryRun {
 		// Abort before installing/launching a browser if the context is already
 		// canceled (e.g. Ctrl+C), so a canceled run does not trigger an
@@ -975,7 +996,7 @@ func Restore(ctx context.Context, g *GitHubClient, repo repository.Repository, i
 		if err := ctx.Err(); err != nil {
 			return fmt.Errorf("uploader initialization canceled: %w", err)
 		}
-		uploader, err = newRestoreUploader(ctx, g, repo, owner, repoName, opts, meta, inputDir)
+		uploader, browserStateFile, err = newRestoreUploader(ctx, g, repo, owner, repoName, opts, meta, inputDir)
 		if err != nil {
 			return err
 		}
@@ -1434,11 +1455,14 @@ func Restore(ctx context.Context, g *GitHubClient, repo repository.Repository, i
 		return nil
 	}
 
-	if opts.ClearCache {
-		if removeErr := os.Remove(opts.StateFile); removeErr != nil && !os.IsNotExist(removeErr) {
-			return fmt.Errorf("clear browser cache after restore %q: %w", opts.StateFile, removeErr)
+	// Only clear the browser session when this run actually launched a browser
+	// (browserStateFile is empty for API-only uploads), so an API upload never
+	// deletes an unrelated saved session.
+	if opts.ClearCache && browserStateFile != "" {
+		if removeErr := os.Remove(browserStateFile); removeErr != nil && !os.IsNotExist(removeErr) {
+			return fmt.Errorf("clear browser cache after restore %q: %w", browserStateFile, removeErr)
 		}
-		logger.Info("browser session cleared", "path", opts.StateFile)
+		logger.Info("browser session cleared", "path", browserStateFile)
 	}
 
 	return nil

@@ -127,19 +127,31 @@ func (u *hybridUploader) Close() {
 // pays the cost of a browser launch (and a possible interactive login) when
 // the host is GitHub Enterprise Server or when metadata references a file the
 // API cannot accept.
-func newRestoreUploader(ctx context.Context, g *GitHubClient, repo repository.Repository, owner, repoName string, opts RestoreOptions, meta *DumpMetadata, inputDir string) (assetUploader, error) {
+//
+// The second return value is the resolved browser state file path, set only
+// when a browser uploader was actually constructed (empty for API-only runs).
+// Restore uses it to scope --clear-cache cleanup to sessions this run created.
+func newRestoreUploader(ctx context.Context, g *GitHubClient, repo repository.Repository, owner, repoName string, opts RestoreOptions, meta *DumpMetadata, inputDir string) (assetUploader, string, error) {
 	method := opts.UploadMethod
 	if method == "" {
 		method = UploadMethodAuto
 	}
 	isEnterprise := auth.IsEnterprise(repo.Host)
 
+	// browserStateFile is populated by newBrowserUploader when (and only when) a
+	// browser session is actually resolved and launched.
+	var browserStateFile string
 	newBrowserUploader := func() (assetUploader, error) {
-		u, err := NewPlaywrightUploader(opts.StateFile, repo.Host, opts.Headed)
+		stateFile, err := ResolveBrowserStateFile(opts.StateFile)
+		if err != nil {
+			return nil, err
+		}
+		browserStateFile = stateFile
+		u, err := NewPlaywrightUploader(stateFile, repo.Host, opts.Headed)
 		if err != nil {
 			return nil, fmt.Errorf("initialize browser uploader: %w", err)
 		}
-		if err := u.Init(ctx, opts.StateFile, owner, repoName, opts.Headed); err != nil {
+		if err := u.Init(ctx, stateFile, owner, repoName, opts.Headed); err != nil {
 			u.Close()
 			return nil, fmt.Errorf("initialize browser session: %w", err)
 		}
@@ -148,34 +160,37 @@ func newRestoreUploader(ctx context.Context, g *GitHubClient, repo repository.Re
 
 	switch method {
 	case UploadMethodBrowser:
-		return newBrowserUploader()
+		u, err := newBrowserUploader()
+		return u, browserStateFile, err
 
 	case UploadMethodAPI:
 		if isEnterprise {
-			return nil, fmt.Errorf("--upload-method api is not supported on GitHub Enterprise Server (%s)", repo.Host)
+			return nil, "", fmt.Errorf("--upload-method api is not supported on GitHub Enterprise Server (%s)", repo.Host)
 		}
-		return newAPIUploaderForRestore(ctx, g, repo)
+		u, err := newAPIUploaderForRestore(ctx, g, repo)
+		return u, "", err
 
 	case UploadMethodAuto:
 		if isEnterprise {
-			return newBrowserUploader()
+			u, err := newBrowserUploader()
+			return u, browserStateFile, err
 		}
 		apiUploader, err := newAPIUploaderForRestore(ctx, g, repo)
 		if err != nil {
-			return nil, err
+			return nil, "", err
 		}
 		if allAssetsAPIUploadable(meta, inputDir) {
-			return apiUploader, nil
+			return apiUploader, "", nil
 		}
 		browserUploader, err := newBrowserUploader()
 		if err != nil {
 			apiUploader.Close()
-			return nil, err
+			return nil, "", err
 		}
-		return &hybridUploader{api: apiUploader, browser: browserUploader}, nil
+		return &hybridUploader{api: apiUploader, browser: browserUploader}, browserStateFile, nil
 
 	default:
-		return nil, fmt.Errorf("unknown upload method %q", method)
+		return nil, "", fmt.Errorf("unknown upload method %q", method)
 	}
 }
 

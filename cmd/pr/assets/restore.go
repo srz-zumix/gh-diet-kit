@@ -52,18 +52,14 @@ Example:
 		RunE: func(cmd *cobra.Command, args []string) error {
 			ctx := cmd.Context()
 
-			// Resolve the state file path early so --clear-cache-only can use
-			// it without requiring --repo or input file flags.
-			stateFile := browserStateFlag
-			if stateFile == "" {
-				configDir, dirErr := os.UserConfigDir()
-				if dirErr != nil {
-					return fmt.Errorf("failed to determine user config directory: %w", dirErr)
-				}
-				stateFile = filepath.Join(configDir, "gh-diet-kit", "playwright-state.json")
-			}
-
 			if clearCacheOnlyFlag {
+				// Resolve the state file path here (not eagerly for every run) so
+				// --clear-cache-only can delete the session without requiring
+				// --repo or input file flags.
+				stateFile, resolveErr := assets.ResolveBrowserStateFile(browserStateFlag)
+				if resolveErr != nil {
+					return resolveErr
+				}
 				if removeErr := os.Remove(stateFile); removeErr != nil && !os.IsNotExist(removeErr) {
 					return fmt.Errorf("failed to clear browser cache %q: %w", stateFile, removeErr)
 				}
@@ -76,6 +72,18 @@ Example:
 			case assets.UploadMethodAuto, assets.UploadMethodAPI, assets.UploadMethodBrowser:
 			default:
 				return fmt.Errorf("invalid --upload-method %q: must be one of auto, api, browser", uploadMethodFlag)
+			}
+
+			// --headed and --clear-cache only affect browser automation, which
+			// --upload-method api never uses. Reject them explicitly rather than
+			// silently ignoring a flag the user deliberately set.
+			if uploadMethod == assets.UploadMethodAPI {
+				if cmd.Flags().Changed("headed") {
+					return fmt.Errorf("--headed is not applicable to --upload-method api")
+				}
+				if cmd.Flags().Changed("clear-cache") {
+					return fmt.Errorf("--clear-cache is not applicable to --upload-method api; use --clear-cache-only to delete a saved browser session")
+				}
 			}
 
 			repo, err := parser.Repository(parser.RepositoryInput(repoFlag))
@@ -118,7 +126,7 @@ Example:
 				PRNumbers:    prFlag,
 				DryRun:       dryRunFlag,
 				UploadMethod: uploadMethod,
-				StateFile:    stateFile,
+				StateFile:    browserStateFlag,
 				Headed:       headedFlag,
 				ClearCache:   clearCacheFlag,
 				UploadDelay:  uploadDelayFlag,

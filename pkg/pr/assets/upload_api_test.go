@@ -198,3 +198,30 @@ func TestAllAssetsAPIUploadable(t *testing.T) {
 		}
 	})
 }
+
+func TestResolveBrowserStateFile(t *testing.T) {
+	t.Run("explicit path is returned unchanged", func(t *testing.T) {
+		got, err := ResolveBrowserStateFile("/tmp/custom-state.json")
+		if err != nil {
+			t.Fatalf("ResolveBrowserStateFile() error = %v", err)
+		}
+		if got != "/tmp/custom-state.json" {
+			t.Fatalf("ResolveBrowserStateFile() = %q, want the explicit path", got)
+		}
+	})
+
+	t.Run("empty path resolves to the default under user config dir", func(t *testing.T) {
+		configDir, err := os.UserConfigDir()
+		if err != nil {
+			t.Skipf("user config dir unavailable: %v", err)
+		}
+		got, err := ResolveBrowserStateFile("")
+		if err != nil {
+			t.Fatalf("ResolveBrowserStateFile() error = %v", err)
+		}
+		want := filepath.Join(configDir, "gh-diet-kit", "playwright-state.json")
+		if got != want {
+			t.Fatalf("ResolveBrowserStateFile() = %q, want %q", got, want)
+		}
+	})
+}
