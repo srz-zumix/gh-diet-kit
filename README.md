@@ -253,9 +253,9 @@ gh diet-kit pr assets list [flags]
 
 #### pr assets restore
 
-Read the `metadata.json` produced by `pr assets dump`, upload each local asset file to the destination repository using Playwright browser automation, and replace the old source asset URLs with the new destination CDN URLs in PR bodies, issue comments, and review comments.
+Read the `metadata.json` produced by `pr assets dump`, upload each local asset file to the destination repository, and replace the old source asset URLs with the new destination CDN URLs in PR bodies, issue comments, and review comments.
 
-On the first run a browser window is opened so you can log in to GitHub interactively. The session is persisted to the `--browser-state` file for headless operation on subsequent runs.
+By default (`--upload-method auto`) assets are uploaded directly through GitHub's REST API, with no browser required. Browser automation (Playwright) is used instead when the destination is GitHub Enterprise Server, or as a fallback for files the API cannot accept (unsupported extension, or over its 10 MB image / 100 MB video size limit). On the first run that needs a browser, a window is opened so you can log in to GitHub interactively; the session is persisted to the `--browser-state` file for headless operation on subsequent runs.
 
 The `--upload-delay` flag paces uploads to stay under GitHub's per-minute secondary rate limit (about 80 content-generating requests per minute). Asset uploads also count against a stricter per-endpoint content-creation limit whose hourly bucket is lower than the documented 500 requests per hour (roughly 80–90 uploads per hour in practice), so a large restore eventually hits it regardless of `--upload-delay`. When that happens, the restore automatically waits and resumes: it honors the `Retry-After` / `x-ratelimit-reset` response headers (waiting up to ~1 hour) before retrying, so a large restore can be left running unattended.
 
@@ -267,17 +267,18 @@ gh diet-kit pr assets restore [flags]
 
 | Flag | Shorthand | Default | Description |
 | ------ | ----------- | ------- | ------------- |
-| `--browser-state` | | `<user-config-dir>/gh-diet-kit/playwright-state.json` | Path to the Playwright browser state file for session persistence |
-| `--clear-cache` | | `false` | Delete the saved browser session after the restore completes |
+| `--browser-state` | | `<user-config-dir>/gh-diet-kit/playwright-state.json` | Path to the Playwright browser state file for session persistence (used only when browser automation is active) |
+| `--clear-cache` | | `false` | Delete the saved browser session after the restore completes (used only when browser automation is active) |
 | `--clear-cache-only` | | `false` | Delete the saved browser session and exit without restoring |
 | `--continue` | | `false` | Resume from `<input-dir>/metadata.restored.json` written by a previous restore (mutually exclusive with `--metadata-file`) |
 | `--dryrun` | `-n` | `false` | Preview uploads and URL replacements without making any changes |
-| `--headed` | | `false` | Run browser in headed (visible) mode even when a saved session exists |
+| `--headed` | | `false` | Run browser in headed (visible) mode even when a saved session exists (used only when browser automation is active) |
 | `--input-dir` | | `./pr-assets` | Directory containing the downloaded asset files |
 | `--metadata-file` | | `<input-dir>/metadata.json` | Path to the metadata JSON file |
 | `--pr` | | all PRs | PR numbers to restore (repeatable) |
 | `--repo` | `-R` | current repository | Destination repository in `[HOST/]OWNER/REPO` format |
 | `--upload-delay` | | `1s` | Minimum delay between asset uploads to avoid GitHub's secondary rate limit |
+| `--upload-method` | | `auto` | Upload method: `auto`, `api`, or `browser` |
 
 #### tree detect
 

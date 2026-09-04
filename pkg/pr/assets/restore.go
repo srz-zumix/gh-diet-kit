@@ -36,6 +36,19 @@ type uploadPolicy struct {
 	AssetUploadAuthenticityToken string `json:"asset_upload_authenticity_token"`
 }
 
+// assetUploader uploads a single local asset file to the destination
+// repository and returns its new URL. It abstracts over the browser-automation
+// uploader and the direct REST API uploader so Restore can use either.
+type assetUploader interface {
+	Upload(ctx context.Context, localPath, filename string) (string, error)
+	// Recover rebuilds the uploader after a non-fatal failure so the restore can
+	// continue instead of failing every remaining asset.
+	Recover(ctx context.Context, owner, repo string) error
+	Close()
+}
+
+var _ assetUploader = (*PlaywrightUploader)(nil)
+
 // PlaywrightUploader manages a Playwright browser session for uploading assets to GitHub.
 type PlaywrightUploader struct {
 	pw      *playwright.Playwright
@@ -68,6 +81,22 @@ const uploaderInputID = "gh-diet-kit-file-input"
 // S3 metadata (the bytes go to S3 separately), so it is fast regardless of file
 // size; the timeout mainly guards against a hung page.
 const uploadPolicyTimeout = 60 * time.Second
+
+// ResolveBrowserStateFile returns stateFile unchanged when it is non-empty,
+// otherwise it computes the default Playwright browser state file path under
+// the user config directory. It is resolved lazily (only when a browser session
+// is actually needed) so that API-only runs never require a user config
+// directory, which may be unavailable in minimal/container environments.
+func ResolveBrowserStateFile(stateFile string) (string, error) {
+	if stateFile != "" {
+		return stateFile, nil
+	}
+	configDir, err := os.UserConfigDir()
+	if err != nil {
+		return "", fmt.Errorf("failed to determine user config directory: %w", err)
+	}
+	return filepath.Join(configDir, "gh-diet-kit", "playwright-state.json"), nil
+}
 
 // NewPlaywrightUploader creates a new PlaywrightUploader and launches a browser.
 // If stateFile does not exist, the browser is launched in headed mode so the user
@@ -601,6 +630,16 @@ func retryAfterDelay(resp playwright.Response, fallback time.Duration) time.Dura
 	return rateLimitWait(retryAfter, reset, fallback)
 }
 
+// retryAfterDelayFromHeader is the plain http.Header equivalent of
+// retryAfterDelay, used by the API uploader, which has no Playwright response
+// to query.
+func retryAfterDelayFromHeader(h http.Header, fallback time.Duration) time.Duration {
+	if h == nil {
+		return fallback
+	}
+	return rateLimitWait(h.Get("Retry-After"), h.Get("X-RateLimit-Reset"), fallback)
+}
+
 // rateLimitWait determines how long to wait before retrying a request that hit
 // GitHub's secondary rate limit. It honors the server's guidance to auto-resume
 // at the right time: the Retry-After header (in seconds) takes priority, then
@@ -824,20 +863,43 @@ func (u *PlaywrightUploader) Recover(ctx context.Context, owner, repo string) er
 	return nil
 }
 
+// UploadMethod selects how Restore uploads asset files to the destination
+// repository.
+type UploadMethod string
+
+const (
+	// UploadMethodAuto uses the REST upload API when the host and every asset
+	// being restored in this run (respecting --pr filtering) support it, and
+	// otherwise falls back to browser automation for the assets the API rejects.
+	UploadMethodAuto UploadMethod = "auto"
+	// UploadMethodAPI uses only the REST upload API, failing outright on a host
+	// or file it does not support instead of falling back.
+	UploadMethodAPI UploadMethod = "api"
+	// UploadMethodBrowser uses only Playwright browser automation.
+	UploadMethodBrowser UploadMethod = "browser"
+)
+
 // RestoreOptions holds configuration for the restore operation.
 type RestoreOptions struct {
 	// PRNumbers limits the restore to specific PR numbers. Empty means all PRs.
 	PRNumbers []int
 	// DryRun logs intended operations without uploading or updating any content.
 	DryRun bool
+	// UploadMethod selects the uploader. Empty means UploadMethodAuto.
+	UploadMethod UploadMethod
 	// StateFile is the path to the Playwright browser state file used for session
-	// persistence between runs.
+	// persistence between runs. Only used when browser automation is active.
+	// An empty value resolves lazily to the default path (via
+	// ResolveBrowserStateFile) at the moment a browser session is launched, so
+	// API-only runs never require a user config directory.
 	StateFile string
 	// Headed forces the browser to run in headed (visible) mode even when a
-	// saved session file exists. Useful for debugging.
+	// saved session file exists. Useful for debugging. Only used when browser
+	// automation is active.
 	Headed bool
 	// ClearCache deletes the saved browser session file after the restore
-	// completes successfully.
+	// completes successfully. Only honored when this run actually launched a
+	// browser; it is a no-op for API-only uploads.
 	ClearCache bool
 	// UploadDelay is the minimum delay inserted before each asset upload to
 	// pace requests and avoid tripping GitHub's secondary rate limit. Zero uses
@@ -921,28 +983,25 @@ func Restore(ctx context.Context, g *GitHubClient, repo repository.Repository, i
 	// most once across the whole restore run (avoids an N+1 listing pattern).
 	cache := newCommentCache(g, repo)
 
-	// Initialize the Playwright uploader (unless dry-run) up front so the
-	// interactive login prompt appears at the very start of the command. The
-	// precheck below can issue many API calls and take a while; opening the
-	// browser first lets the user log in immediately instead of waiting for the
-	// precheck to finish before being prompted.
-	var uploader *PlaywrightUploader
+	// Initialize the uploader (unless dry-run) up front so an interactive
+	// browser login prompt, if needed, appears at the very start of the
+	// command. The precheck below can issue many API calls and take a while;
+	// resolving the uploader first lets the user log in immediately instead of
+	// waiting for the precheck to finish before being prompted.
+	var uploader assetUploader
+	var browserStateFile string
 	if !opts.DryRun {
-		// Abort before installing/launching the browser if the context is
-		// already canceled (e.g. Ctrl+C), so a canceled run does not trigger an
+		// Abort before installing/launching a browser if the context is already
+		// canceled (e.g. Ctrl+C), so a canceled run does not trigger an
 		// interactive login prompt or a long browser startup.
 		if err := ctx.Err(); err != nil {
-			return fmt.Errorf("browser initialization canceled: %w", err)
+			return fmt.Errorf("uploader initialization canceled: %w", err)
 		}
-		uploader, err = NewPlaywrightUploader(opts.StateFile, repo.Host, opts.Headed)
+		uploader, browserStateFile, err = newRestoreUploader(ctx, g, repo, owner, repoName, opts, meta, inputDir)
 		if err != nil {
-			return fmt.Errorf("initialize browser uploader: %w", err)
+			return err
 		}
 		defer uploader.Close()
-
-		if err := uploader.Init(ctx, opts.StateFile, owner, repoName, opts.Headed); err != nil {
-			return fmt.Errorf("initialize browser session: %w", err)
-		}
 	}
 
 	// Only upload assets whose source URLs still exist in the destination body or
@@ -1168,14 +1227,12 @@ func Restore(ctx context.Context, g *GitHubClient, repo repository.Repository, i
 			// read. Trying each candidate avoids permanently skipping a URL when
 			// an earlier duplicate has an empty or stale LocalFile but a later
 			// one is usable.
-			for _, a := range candidates {
-				if a.LocalFile == "" {
-					continue
-				}
-				if p, good := resolveLocalPath(inputDir, a.LocalFile); good {
-					sel = usableAsset{asset: a, localPath: p, ok: true}
-					break
-				}
+			a, p, good, err := firstUsableAssetCandidate(ctx, candidates, inputDir)
+			if err != nil {
+				return "", false, fmt.Errorf("select upload candidate canceled: %w", err)
+			}
+			if good {
+				sel = usableAsset{asset: a, localPath: p, ok: true}
 			}
 			picked[oldURL] = sel
 			if !sel.ok {
@@ -1397,11 +1454,14 @@ func Restore(ctx context.Context, g *GitHubClient, repo repository.Repository, i
 		return nil
 	}
 
-	if opts.ClearCache {
-		if removeErr := os.Remove(opts.StateFile); removeErr != nil && !os.IsNotExist(removeErr) {
-			return fmt.Errorf("clear browser cache after restore %q: %w", opts.StateFile, removeErr)
+	// Only clear the browser session when this run actually launched a browser
+	// (browserStateFile is empty for API-only uploads), so an API upload never
+	// deletes an unrelated saved session.
+	if opts.ClearCache && browserStateFile != "" {
+		if removeErr := os.Remove(browserStateFile); removeErr != nil && !os.IsNotExist(removeErr) {
+			return fmt.Errorf("clear browser cache after restore %q: %w", browserStateFile, removeErr)
 		}
-		logger.Info("browser session cleared", "path", opts.StateFile)
+		logger.Info("browser session cleared", "path", browserStateFile)
 	}
 
 	return nil
@@ -1473,6 +1533,30 @@ func replaceURLs(body string, replacements map[string]string) string {
 		body = strings.ReplaceAll(body, oldURL, newURL)
 	}
 	return body
+}
+
+// firstUsableAssetCandidate returns the first asset among candidates whose
+// LocalFile is set and resolves to a readable file under inputDir, along with
+// its resolved path. It mirrors the candidate selection ensureUploaded performs
+// at upload time, so a URL that reuses the same asset across several metadata
+// entries is uploaded from the first usable duplicate. ok is false when no
+// candidate has a usable local file (its upload is later skipped). It checks
+// ctx before probing each candidate so a large duplicate list honors
+// cancellation promptly; a non-nil error means selection was canceled and the
+// other results are not meaningful.
+func firstUsableAssetCandidate(ctx context.Context, candidates []*PRAsset, inputDir string) (*PRAsset, string, bool, error) {
+	for _, a := range candidates {
+		if err := ctx.Err(); err != nil {
+			return nil, "", false, err
+		}
+		if a.LocalFile == "" {
+			continue
+		}
+		if p, good := resolveLocalPath(inputDir, a.LocalFile); good {
+			return a, p, true, nil
+		}
+	}
+	return nil, "", false, nil
 }
 
 // resolveLocalPath resolves a dump-relative local file path against inputDir and
