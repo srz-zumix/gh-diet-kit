@@ -36,6 +36,19 @@ type uploadPolicy struct {
 	AssetUploadAuthenticityToken string `json:"asset_upload_authenticity_token"`
 }
 
+// assetUploader uploads a single local asset file to the destination
+// repository and returns its new URL. It abstracts over the browser-automation
+// uploader and the direct REST API uploader so Restore can use either.
+type assetUploader interface {
+	Upload(ctx context.Context, localPath, filename string) (string, error)
+	// Recover rebuilds the uploader after a non-fatal failure so the restore can
+	// continue instead of failing every remaining asset.
+	Recover(ctx context.Context, owner, repo string) error
+	Close()
+}
+
+var _ assetUploader = (*PlaywrightUploader)(nil)
+
 // PlaywrightUploader manages a Playwright browser session for uploading assets to GitHub.
 type PlaywrightUploader struct {
 	pw      *playwright.Playwright
@@ -601,6 +614,16 @@ func retryAfterDelay(resp playwright.Response, fallback time.Duration) time.Dura
 	return rateLimitWait(retryAfter, reset, fallback)
 }
 
+// retryAfterDelayFromHeader is the plain http.Header equivalent of
+// retryAfterDelay, used by the API uploader, which has no Playwright response
+// to query.
+func retryAfterDelayFromHeader(h http.Header, fallback time.Duration) time.Duration {
+	if h == nil {
+		return fallback
+	}
+	return rateLimitWait(h.Get("Retry-After"), h.Get("X-RateLimit-Reset"), fallback)
+}
+
 // rateLimitWait determines how long to wait before retrying a request that hit
 // GitHub's secondary rate limit. It honors the server's guidance to auto-resume
 // at the right time: the Retry-After header (in seconds) takes priority, then
@@ -824,20 +847,38 @@ func (u *PlaywrightUploader) Recover(ctx context.Context, owner, repo string) er
 	return nil
 }
 
+// UploadMethod selects how Restore uploads asset files to the destination
+// repository.
+type UploadMethod string
+
+const (
+	// UploadMethodAuto uses the REST upload API when the host and every asset
+	// support it, and otherwise falls back to browser automation.
+	UploadMethodAuto UploadMethod = "auto"
+	// UploadMethodAPI uses only the REST upload API, failing outright on a host
+	// or file it does not support instead of falling back.
+	UploadMethodAPI UploadMethod = "api"
+	// UploadMethodBrowser uses only Playwright browser automation.
+	UploadMethodBrowser UploadMethod = "browser"
+)
+
 // RestoreOptions holds configuration for the restore operation.
 type RestoreOptions struct {
 	// PRNumbers limits the restore to specific PR numbers. Empty means all PRs.
 	PRNumbers []int
 	// DryRun logs intended operations without uploading or updating any content.
 	DryRun bool
+	// UploadMethod selects the uploader. Empty means UploadMethodAuto.
+	UploadMethod UploadMethod
 	// StateFile is the path to the Playwright browser state file used for session
-	// persistence between runs.
+	// persistence between runs. Only used when browser automation is active.
 	StateFile string
 	// Headed forces the browser to run in headed (visible) mode even when a
-	// saved session file exists. Useful for debugging.
+	// saved session file exists. Useful for debugging. Only used when browser
+	// automation is active.
 	Headed bool
 	// ClearCache deletes the saved browser session file after the restore
-	// completes successfully.
+	// completes successfully. Only used when browser automation is active.
 	ClearCache bool
 	// UploadDelay is the minimum delay inserted before each asset upload to
 	// pace requests and avoid tripping GitHub's secondary rate limit. Zero uses
@@ -921,28 +962,24 @@ func Restore(ctx context.Context, g *GitHubClient, repo repository.Repository, i
 	// most once across the whole restore run (avoids an N+1 listing pattern).
 	cache := newCommentCache(g, repo)
 
-	// Initialize the Playwright uploader (unless dry-run) up front so the
-	// interactive login prompt appears at the very start of the command. The
-	// precheck below can issue many API calls and take a while; opening the
-	// browser first lets the user log in immediately instead of waiting for the
-	// precheck to finish before being prompted.
-	var uploader *PlaywrightUploader
+	// Initialize the uploader (unless dry-run) up front so an interactive
+	// browser login prompt, if needed, appears at the very start of the
+	// command. The precheck below can issue many API calls and take a while;
+	// resolving the uploader first lets the user log in immediately instead of
+	// waiting for the precheck to finish before being prompted.
+	var uploader assetUploader
 	if !opts.DryRun {
-		// Abort before installing/launching the browser if the context is
-		// already canceled (e.g. Ctrl+C), so a canceled run does not trigger an
+		// Abort before installing/launching a browser if the context is already
+		// canceled (e.g. Ctrl+C), so a canceled run does not trigger an
 		// interactive login prompt or a long browser startup.
 		if err := ctx.Err(); err != nil {
-			return fmt.Errorf("browser initialization canceled: %w", err)
+			return fmt.Errorf("uploader initialization canceled: %w", err)
 		}
-		uploader, err = NewPlaywrightUploader(opts.StateFile, repo.Host, opts.Headed)
+		uploader, err = newRestoreUploader(ctx, g, repo, owner, repoName, opts, meta, inputDir)
 		if err != nil {
-			return fmt.Errorf("initialize browser uploader: %w", err)
+			return err
 		}
 		defer uploader.Close()
-
-		if err := uploader.Init(ctx, opts.StateFile, owner, repoName, opts.Headed); err != nil {
-			return fmt.Errorf("initialize browser session: %w", err)
-		}
 	}
 
 	// Only upload assets whose source URLs still exist in the destination body or

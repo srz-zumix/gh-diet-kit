@@ -13,8 +13,9 @@ import (
 
 // NewRestoreCmd returns the cobra.Command for the pr assets restore subcommand.
 // It reads a metadata.json produced by "pr assets dump", uploads each local asset
-// file to the destination repository via Playwright browser automation, and
-// updates PR bodies, issue comments, and review comments with the new CDN URLs.
+// file to the destination repository (via GitHub's REST upload API or, when
+// needed, Playwright browser automation), and updates PR bodies, issue
+// comments, and review comments with the new CDN URLs.
 func NewRestoreCmd() *cobra.Command {
 	var repoFlag string
 	var inputDirFlag string
@@ -22,6 +23,7 @@ func NewRestoreCmd() *cobra.Command {
 	var continueFlag bool
 	var prFlag []int
 	var dryRunFlag bool
+	var uploadMethodFlag string
 	var browserStateFlag string
 	var headedFlag bool
 	var clearCacheFlag bool
@@ -33,13 +35,17 @@ func NewRestoreCmd() *cobra.Command {
 		Short: "Re-upload PR assets and update URLs in the destination repository",
 		Args:  cobra.NoArgs,
 		Long: `Read the metadata.json produced by "pr assets dump", upload each local asset
-file to the destination repository using Playwright browser automation, and
-replace the old source asset URLs with the new destination CDN URLs in PR
-bodies, issue comments, and review comments.
+file to the destination repository, and replace the old source asset URLs
+with the new destination CDN URLs in PR bodies, issue comments, and review
+comments.
 
-On the first run a browser window is opened so you can log in to GitHub
-interactively. The session is saved to --browser-state for headless operation
-on subsequent runs.
+By default (--upload-method auto) assets are uploaded directly through
+GitHub's REST API, with no browser required. Browser automation (Playwright)
+is used instead when the destination is GitHub Enterprise Server, or as a
+fallback for files the API cannot accept (unsupported extension or over its
+size limit). On the first run that needs a browser, a window is opened so you
+can log in to GitHub interactively; the session is saved to --browser-state
+for headless operation on subsequent runs.
 
 Example:
   gh diet-kit pr assets restore -R owner/repo --input-dir ./pr-assets`,
@@ -63,6 +69,13 @@ Example:
 				}
 				cmd.Printf("browser session cleared: %s\n", stateFile)
 				return nil
+			}
+
+			uploadMethod := assets.UploadMethod(uploadMethodFlag)
+			switch uploadMethod {
+			case assets.UploadMethodAuto, assets.UploadMethodAPI, assets.UploadMethodBrowser:
+			default:
+				return fmt.Errorf("invalid --upload-method %q: must be one of auto, api, browser", uploadMethodFlag)
 			}
 
 			repo, err := parser.Repository(parser.RepositoryInput(repoFlag))
@@ -102,12 +115,13 @@ Example:
 			}
 
 			opts := assets.RestoreOptions{
-				PRNumbers:   prFlag,
-				DryRun:      dryRunFlag,
-				StateFile:   stateFile,
-				Headed:      headedFlag,
-				ClearCache:  clearCacheFlag,
-				UploadDelay: uploadDelayFlag,
+				PRNumbers:    prFlag,
+				DryRun:       dryRunFlag,
+				UploadMethod: uploadMethod,
+				StateFile:    stateFile,
+				Headed:       headedFlag,
+				ClearCache:   clearCacheFlag,
+				UploadDelay:  uploadDelayFlag,
 			}
 
 			if err := assets.Restore(ctx, g, repo, inputDirFlag, metaPath, opts); err != nil {
@@ -125,9 +139,10 @@ Example:
 	f.BoolVar(&continueFlag, "continue", false, "Resume from <input-dir>/"+assets.RestoredMetadataFilename+" written by a previous restore (mutually exclusive with --metadata-file)")
 	f.IntSliceVar(&prFlag, "pr", nil, "PR numbers to restore (repeatable; default: all PRs)")
 	f.BoolVarP(&dryRunFlag, "dryrun", "n", false, "Preview uploads and replacements without making any changes")
-	f.StringVar(&browserStateFlag, "browser-state", "", "Path to the Playwright browser state file for session persistence (default: <user-config-dir>/gh-diet-kit/playwright-state.json)")
-	f.BoolVar(&headedFlag, "headed", false, "Run browser in headed (visible) mode even when a saved session exists (useful for debugging)")
-	f.BoolVar(&clearCacheFlag, "clear-cache", false, "Delete the saved browser session after the restore completes")
+	f.StringVar(&uploadMethodFlag, "upload-method", string(assets.UploadMethodAuto), "Upload method: auto, api, or browser")
+	f.StringVar(&browserStateFlag, "browser-state", "", "Path to the Playwright browser state file for session persistence (default: <user-config-dir>/gh-diet-kit/playwright-state.json); used only when browser automation is active")
+	f.BoolVar(&headedFlag, "headed", false, "Run browser in headed (visible) mode even when a saved session exists (useful for debugging); used only when browser automation is active")
+	f.BoolVar(&clearCacheFlag, "clear-cache", false, "Delete the saved browser session after the restore completes; used only when browser automation is active")
 	f.BoolVar(&clearCacheOnlyFlag, "clear-cache-only", false, "Delete the saved browser session and exit without restoring")
 	f.DurationVar(&uploadDelayFlag, "upload-delay", assets.DefaultUploadDelay, "Minimum delay between asset uploads to avoid GitHub's secondary rate limit")
 
