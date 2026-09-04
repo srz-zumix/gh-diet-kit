@@ -155,13 +155,22 @@ func TestNewAPIUploader_RejectsMissingRepositoryID(t *testing.T) {
 }
 
 func TestAllSelectedAssetsAPIUploadable(t *testing.T) {
+	eligible := func(t *testing.T, meta *DumpMetadata, dir string, prNumbers []int) bool {
+		t.Helper()
+		ok, err := allSelectedAssetsAPIUploadable(context.Background(), meta, dir, prNumbers)
+		if err != nil {
+			t.Fatalf("allSelectedAssetsAPIUploadable() error = %v", err)
+		}
+		return ok
+	}
+
 	t.Run("all supported extensions and sizes", func(t *testing.T) {
 		dir := t.TempDir()
 		writeAssetFile(t, dir, "shot.png", "small")
 		meta := &DumpMetadata{Assets: []*PRAsset{
 			{PRNumber: 1, AssetURL: "u1", Filename: "shot.png", LocalFile: "shot.png"},
 		}}
-		if !allSelectedAssetsAPIUploadable(meta, dir, nil) {
+		if !eligible(t, meta, dir, nil) {
 			t.Fatal("allSelectedAssetsAPIUploadable() = false, want true")
 		}
 	})
@@ -172,7 +181,7 @@ func TestAllSelectedAssetsAPIUploadable(t *testing.T) {
 		meta := &DumpMetadata{Assets: []*PRAsset{
 			{PRNumber: 1, AssetURL: "u1", Filename: "notes.pdf", LocalFile: "notes.pdf"},
 		}}
-		if allSelectedAssetsAPIUploadable(meta, dir, nil) {
+		if eligible(t, meta, dir, nil) {
 			t.Fatal("allSelectedAssetsAPIUploadable() = true, want false")
 		}
 	})
@@ -184,7 +193,7 @@ func TestAllSelectedAssetsAPIUploadable(t *testing.T) {
 		meta := &DumpMetadata{Assets: []*PRAsset{
 			{PRNumber: 1, AssetURL: "u1", Filename: "big.png", LocalFile: "big.png"},
 		}}
-		if allSelectedAssetsAPIUploadable(meta, dir, nil) {
+		if eligible(t, meta, dir, nil) {
 			t.Fatal("allSelectedAssetsAPIUploadable() = true, want false")
 		}
 	})
@@ -194,7 +203,7 @@ func TestAllSelectedAssetsAPIUploadable(t *testing.T) {
 		meta := &DumpMetadata{Assets: []*PRAsset{
 			{PRNumber: 1, AssetURL: "u1", Filename: "shot.png", LocalFile: "missing.png"},
 		}}
-		if !allSelectedAssetsAPIUploadable(meta, dir, nil) {
+		if !eligible(t, meta, dir, nil) {
 			t.Fatal("allSelectedAssetsAPIUploadable() = false, want true")
 		}
 	})
@@ -204,7 +213,7 @@ func TestAllSelectedAssetsAPIUploadable(t *testing.T) {
 		meta := &DumpMetadata{Assets: []*PRAsset{
 			{PRNumber: 1, AssetURL: "u1", Filename: "notes.pdf"},
 		}}
-		if !allSelectedAssetsAPIUploadable(meta, dir, nil) {
+		if !eligible(t, meta, dir, nil) {
 			t.Fatal("allSelectedAssetsAPIUploadable() = false, want true")
 		}
 	})
@@ -217,10 +226,10 @@ func TestAllSelectedAssetsAPIUploadable(t *testing.T) {
 			{PRNumber: 1, AssetURL: "u1", Filename: "shot.png", LocalFile: "shot.png"},
 			{PRNumber: 2, AssetURL: "u2", Filename: "notes.pdf", LocalFile: "notes.pdf"},
 		}}
-		if !allSelectedAssetsAPIUploadable(meta, dir, []int{1}) {
+		if !eligible(t, meta, dir, []int{1}) {
 			t.Fatal("allSelectedAssetsAPIUploadable() = false, want true (PR 2 is out of scope)")
 		}
-		if allSelectedAssetsAPIUploadable(meta, dir, []int{2}) {
+		if eligible(t, meta, dir, []int{2}) {
 			t.Fatal("allSelectedAssetsAPIUploadable() = true, want false (PR 2 selected)")
 		}
 	})
@@ -235,8 +244,21 @@ func TestAllSelectedAssetsAPIUploadable(t *testing.T) {
 			{PRNumber: 2, AssetURL: "shared", Filename: "big.png", LocalFile: "big.png"},
 			{PRNumber: 1, AssetURL: "shared", Filename: "big.png"},
 		}}
-		if allSelectedAssetsAPIUploadable(meta, dir, []int{1}) {
+		if eligible(t, meta, dir, []int{1}) {
 			t.Fatal("allSelectedAssetsAPIUploadable() = true, want false (upload would use the oversized cross-PR file)")
+		}
+	})
+
+	t.Run("canceled context aborts the preflight", func(t *testing.T) {
+		dir := t.TempDir()
+		writeAssetFile(t, dir, "shot.png", "small")
+		meta := &DumpMetadata{Assets: []*PRAsset{
+			{PRNumber: 1, AssetURL: "u1", Filename: "shot.png", LocalFile: "shot.png"},
+		}}
+		ctx, cancel := context.WithCancel(context.Background())
+		cancel()
+		if _, err := allSelectedAssetsAPIUploadable(ctx, meta, dir, nil); !errors.Is(err, context.Canceled) {
+			t.Fatalf("allSelectedAssetsAPIUploadable() error = %v, want context.Canceled", err)
 		}
 	})
 }

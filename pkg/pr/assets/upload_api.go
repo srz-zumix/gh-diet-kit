@@ -179,7 +179,12 @@ func newRestoreUploader(ctx context.Context, g *GitHubClient, repo repository.Re
 		if err != nil {
 			return nil, "", err
 		}
-		if allSelectedAssetsAPIUploadable(meta, inputDir, opts.PRNumbers) {
+		apiOnly, err := allSelectedAssetsAPIUploadable(ctx, meta, inputDir, opts.PRNumbers)
+		if err != nil {
+			apiUploader.Close()
+			return nil, "", err
+		}
+		if apiOnly {
 			return apiUploader, "", nil
 		}
 		browserUploader, err := newBrowserUploader()
@@ -217,7 +222,10 @@ func newAPIUploaderForRestore(ctx context.Context, g *GitHubClient, repo reposit
 //     because the upload source is keyed by content, not by the selected PR.
 //   - A URL with no usable local file is treated as acceptable, since its
 //     upload is skipped rather than routed through the browser.
-func allSelectedAssetsAPIUploadable(meta *DumpMetadata, inputDir string, prNumbers []int) bool {
+//
+// It checks ctx while scanning so a large dump honors cancellation promptly.
+// The returned bool is meaningful only when the returned error is nil.
+func allSelectedAssetsAPIUploadable(ctx context.Context, meta *DumpMetadata, inputDir string, prNumbers []int) (bool, error) {
 	prFilter := make(map[int]bool, len(prNumbers))
 	for _, n := range prNumbers {
 		prFilter[n] = true
@@ -227,11 +235,17 @@ func allSelectedAssetsAPIUploadable(meta *DumpMetadata, inputDir string, prNumbe
 	// cross-PR fallback the upload loop performs.
 	urlToAssets := make(map[string][]*PRAsset)
 	for _, a := range meta.Assets {
+		if err := ctx.Err(); err != nil {
+			return false, fmt.Errorf("asset API eligibility preflight canceled: %w", err)
+		}
 		urlToAssets[a.AssetURL] = append(urlToAssets[a.AssetURL], a)
 	}
 
 	checked := make(map[string]bool)
 	for _, a := range meta.Assets {
+		if err := ctx.Err(); err != nil {
+			return false, fmt.Errorf("asset API eligibility preflight canceled: %w", err)
+		}
 		if len(prFilter) > 0 && !prFilter[a.PRNumber] {
 			continue
 		}
@@ -240,17 +254,20 @@ func allSelectedAssetsAPIUploadable(meta *DumpMetadata, inputDir string, prNumbe
 		}
 		checked[a.AssetURL] = true
 
-		sel, localPath, ok := firstUsableAssetCandidate(urlToAssets[a.AssetURL], inputDir)
+		sel, localPath, ok, err := firstUsableAssetCandidate(ctx, urlToAssets[a.AssetURL], inputDir)
+		if err != nil {
+			return false, fmt.Errorf("asset API eligibility preflight canceled: %w", err)
+		}
 		if !ok {
 			continue
 		}
-		fi, err := os.Stat(localPath)
-		if err != nil {
+		fi, statErr := os.Stat(localPath)
+		if statErr != nil {
 			continue
 		}
 		if _, ok := gh.UserAttachmentSupported(sel.Filename, fi.Size()); !ok {
-			return false
+			return false, nil
 		}
 	}
-	return true
+	return true, nil
 }

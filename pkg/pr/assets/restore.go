@@ -1227,7 +1227,11 @@ func Restore(ctx context.Context, g *GitHubClient, repo repository.Repository, i
 			// read. Trying each candidate avoids permanently skipping a URL when
 			// an earlier duplicate has an empty or stale LocalFile but a later
 			// one is usable.
-			if a, p, good := firstUsableAssetCandidate(candidates, inputDir); good {
+			a, p, good, err := firstUsableAssetCandidate(ctx, candidates, inputDir)
+			if err != nil {
+				return "", false, fmt.Errorf("select upload candidate canceled: %w", err)
+			}
+			if good {
 				sel = usableAsset{asset: a, localPath: p, ok: true}
 			}
 			picked[oldURL] = sel
@@ -1536,17 +1540,23 @@ func replaceURLs(body string, replacements map[string]string) string {
 // its resolved path. It mirrors the candidate selection ensureUploaded performs
 // at upload time, so a URL that reuses the same asset across several metadata
 // entries is uploaded from the first usable duplicate. ok is false when no
-// candidate has a usable local file (its upload is later skipped).
-func firstUsableAssetCandidate(candidates []*PRAsset, inputDir string) (*PRAsset, string, bool) {
+// candidate has a usable local file (its upload is later skipped). It checks
+// ctx before probing each candidate so a large duplicate list honors
+// cancellation promptly; a non-nil error means selection was canceled and the
+// other results are not meaningful.
+func firstUsableAssetCandidate(ctx context.Context, candidates []*PRAsset, inputDir string) (*PRAsset, string, bool, error) {
 	for _, a := range candidates {
+		if err := ctx.Err(); err != nil {
+			return nil, "", false, err
+		}
 		if a.LocalFile == "" {
 			continue
 		}
 		if p, good := resolveLocalPath(inputDir, a.LocalFile); good {
-			return a, p, true
+			return a, p, true, nil
 		}
 	}
-	return nil, "", false
+	return nil, "", false, nil
 }
 
 // resolveLocalPath resolves a dump-relative local file path against inputDir and
