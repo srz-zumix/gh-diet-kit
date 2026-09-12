@@ -6,6 +6,8 @@ import (
 	"fmt"
 	"slices"
 	"strings"
+	"sync"
+	"sync/atomic"
 
 	"github.com/cli/go-gh/v2/pkg/repository"
 	"github.com/google/go-github/v90/github"
@@ -96,6 +98,11 @@ const (
 // avoids secondary rate-limit spikes while still parallelising I/O.
 const commitFetchConcurrency = 10
 
+// pullRequestConcurrency is the maximum number of pull requests inspected
+// concurrently. GitHub's secondary rate limit reacts to the number of requests
+// issued in parallel, so this default is deliberately conservative.
+const pullRequestConcurrency = 4
+
 // ReachabilityCheckModeValues is the ordered list of valid ReachabilityCheckMode
 // string values, suitable for use with flag enum helpers.
 var ReachabilityCheckModeValues = []string{
@@ -139,6 +146,11 @@ type DanglingOptions struct {
 	// used when fetching commit blob info within a single PR. Zero or negative uses
 	// commitFetchConcurrency as the default.
 	CommitFetchConcurrency int
+	// PRConcurrency is the maximum number of pull requests inspected concurrently.
+	// Zero or negative uses pullRequestConcurrency as the default. Higher values
+	// speed up large repositories but increase the risk of hitting GitHub's
+	// secondary rate limit.
+	PRConcurrency int
 	// NoBlobSize skips all blob size computation. When true, TotalBlobSize is always
 	// nil in results and no GetCommit or GetGitTreeRecursive API calls are made.
 	// This significantly reduces the number of API calls for large repositories.
@@ -154,13 +166,55 @@ func (o DanglingOptions) fetchConcurrency() int {
 	return commitFetchConcurrency
 }
 
+// prConcurrency returns the effective concurrency limit for PR processing.
+// It falls back to pullRequestConcurrency when PRConcurrency is not positive.
+func (o DanglingOptions) prConcurrency() int {
+	if o.PRConcurrency > 0 {
+		return o.PRConcurrency
+	}
+	return pullRequestConcurrency
+}
+
+// unreachableSet is a concurrency-safe set of commit SHAs confirmed unreachable
+// from any ref. It is shared by every PR worker because reachability is a
+// property of the commit object itself, not of any individual PR.
+//
+// Because PRs are inspected concurrently, the same SHA may be checked by several
+// workers before the first result is recorded. The "parent is unreachable, so the
+// child is too" shortcut therefore hits less often than in a sequential run and
+// some redundant API or git calls may be made. Results are unaffected: the
+// underlying reachability check is idempotent and never depends on the set.
+type unreachableSet struct {
+	mu   sync.RWMutex
+	shas map[string]bool
+}
+
+// newUnreachableSet returns an empty unreachableSet.
+func newUnreachableSet() *unreachableSet {
+	return &unreachableSet{shas: make(map[string]bool)}
+}
+
+// Has reports whether sha has been recorded as unreachable.
+func (s *unreachableSet) Has(sha string) bool {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	return s.shas[sha]
+}
+
+// Add records sha as unreachable.
+func (s *unreachableSet) Add(sha string) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.shas[sha] = true
+}
+
 // parentUnreachable reports whether any of the given parent commits has a SHA
-// already recorded in unreachableSHAs. Because reachability from any ref is
+// already recorded in unreachable. Because reachability from any ref is
 // closed under ancestry, a commit whose parent is unreachable is also unreachable,
 // so no further API or git call is needed.
-func parentUnreachable(parents []*github.Commit, unreachableSHAs map[string]bool) bool {
+func parentUnreachable(parents []*github.Commit, unreachable *unreachableSet) bool {
 	for _, p := range parents {
-		if unreachableSHAs[p.GetSHA()] {
+		if unreachable.Has(p.GetSHA()) {
 			return true
 		}
 	}
@@ -477,15 +531,15 @@ func ListClosedPRs(ctx context.Context, g *GitHubClient, repo repository.Reposit
 
 // checkCommitDangling determines whether a single commit should be treated as
 // dangling, applying the parent-based shortcut and recording the result in
-// unreachableSHAs when applicable. It is the single per-commit reachability
+// unreachable when applicable. It is the single per-commit reachability
 // decision used by both chain and force-push processing.
-func checkCommitDangling(ctx context.Context, g *GitHubClient, repo repository.Repository, c *github.RepositoryCommit, opts DanglingOptions, unreachableSHAs map[string]bool) (bool, error) {
+func checkCommitDangling(ctx context.Context, g *GitHubClient, repo repository.Repository, c *github.RepositoryCommit, opts DanglingOptions, unreachable *unreachableSet) (bool, error) {
 	sha := c.GetSHA()
-	if unreachableSHAs[sha] {
+	if unreachable.Has(sha) {
 		return true, nil
 	}
-	if parentUnreachable(c.Parents, unreachableSHAs) {
-		unreachableSHAs[sha] = true
+	if parentUnreachable(c.Parents, unreachable) {
+		unreachable.Add(sha)
 		return true, nil
 	}
 	dangling, err := isCommitDanglingByReachability(ctx, g, repo, sha, opts)
@@ -493,13 +547,13 @@ func checkCommitDangling(ctx context.Context, g *GitHubClient, repo repository.R
 		if opts.StrictErrors {
 			return false, err
 		}
-		// Lenient mode: treat as dangling but do not update unreachableSHAs to
+		// Lenient mode: treat as dangling but do not update unreachable to
 		// avoid cascading misclassification when the error is transient.
 		logger.Warn("reachability check failed, treating commit as dangling (lenient mode)", "sha", sha, "error", err)
 		return true, nil
 	}
 	if dangling {
-		unreachableSHAs[sha] = true
+		unreachable.Add(sha)
 	}
 	return dangling, nil
 }
@@ -511,7 +565,7 @@ func checkCommitDangling(ctx context.Context, g *GitHubClient, repo repository.R
 //
 // Check order: oldest → (if reachable) newest → parent shortcut from oldest.
 // For the common "all unreachable" scenario, this costs exactly 1 API call.
-func processChainCandidates(ctx context.Context, g *GitHubClient, repo repository.Repository, chain []*github.RepositoryCommit, opts DanglingOptions, unreachableSHAs map[string]bool) ([]*github.RepositoryCommit, error) {
+func processChainCandidates(ctx context.Context, g *GitHubClient, repo repository.Repository, chain []*github.RepositoryCommit, opts DanglingOptions, unreachable *unreachableSet) ([]*github.RepositoryCommit, error) {
 	if len(chain) == 0 {
 		return nil, nil
 	}
@@ -520,7 +574,7 @@ func processChainCandidates(ctx context.Context, g *GitHubClient, repo repositor
 	// there are at least two commits to make the pre-checks worthwhile.
 	if opts.ReachabilityCheck != ReachabilityCheckNone && opts.ReachabilityCheck != "" && len(chain) > 1 {
 		oldest := chain[0]
-		if !unreachableSHAs[oldest.GetSHA()] && !parentUnreachable(oldest.Parents, unreachableSHAs) {
+		if !unreachable.Has(oldest.GetSHA()) && !parentUnreachable(oldest.Parents, unreachable) {
 			oldestDangling, err := isCommitDanglingByReachability(ctx, g, repo, oldest.GetSHA(), opts)
 			if err != nil {
 				if opts.StrictErrors {
@@ -531,12 +585,12 @@ func processChainCandidates(ctx context.Context, g *GitHubClient, repo repositor
 			} else if oldestDangling {
 				// Oldest unreachable → parent shortcut propagates to every later commit
 				// in the chain; no further API/git calls needed for this shortcut.
-				unreachableSHAs[oldest.GetSHA()] = true
+				unreachable.Add(oldest.GetSHA())
 				logger.Debug("chain oldest unreachable, parent shortcut covers rest", "sha", oldest.GetSHA(), "chain_len", len(chain))
 			} else {
 				// Oldest reachable → check newest for a full-chain reachable shortcut.
 				newest := chain[len(chain)-1]
-				if !unreachableSHAs[newest.GetSHA()] && !parentUnreachable(newest.Parents, unreachableSHAs) {
+				if !unreachable.Has(newest.GetSHA()) && !parentUnreachable(newest.Parents, unreachable) {
 					newestDangling, err := isCommitDanglingByReachability(ctx, g, repo, newest.GetSHA(), opts)
 					if err != nil {
 						if opts.StrictErrors {
@@ -549,7 +603,7 @@ func processChainCandidates(ctx context.Context, g *GitHubClient, repo repositor
 						logger.Debug("skipping chain: oldest and newest both reachable", "oldest", oldest.GetSHA(), "newest", newest.GetSHA())
 						return nil, nil
 					} else {
-						unreachableSHAs[newest.GetSHA()] = true
+						unreachable.Add(newest.GetSHA())
 					}
 				}
 			}
@@ -558,7 +612,7 @@ func processChainCandidates(ctx context.Context, g *GitHubClient, repo repositor
 
 	var result []*github.RepositoryCommit
 	for _, c := range chain {
-		dangling, err := checkCommitDangling(ctx, g, repo, c, opts, unreachableSHAs)
+		dangling, err := checkCommitDangling(ctx, g, repo, c, opts, unreachable)
 		if err != nil {
 			return nil, fmt.Errorf("check commit reachability for %s: %w", c.GetSHA(), err)
 		}
@@ -572,32 +626,28 @@ func processChainCandidates(ctx context.Context, g *GitHubClient, repo repositor
 }
 
 // processPRCandidates applies reachability checks to the chain and force-push
-// candidate lists, then invokes visit with the confirmed dangling commits.
-// Returns nil immediately when no dangling commits are found.
+// candidate lists and returns the confirmed dangling commits of the PR.
+// Returns nil when the PR has none.
 // This is the common final step shared by the cache-hit path and the normal path.
-func processPRCandidates(ctx context.Context, g *GitHubClient, repo repository.Repository, pr *github.PullRequest, chain, forcePushed []*github.RepositoryCommit, opts DanglingOptions, unreachableSHAs map[string]bool, visit danglingCommitVisitor) error {
-	chainDangling, err := processChainCandidates(ctx, g, repo, chain, opts, unreachableSHAs)
+func processPRCandidates(ctx context.Context, g *GitHubClient, repo repository.Repository, pr *github.PullRequest, chain, forcePushed []*github.RepositoryCommit, opts DanglingOptions, unreachable *unreachableSet) ([]*github.RepositoryCommit, error) {
+	chainDangling, err := processChainCandidates(ctx, g, repo, chain, opts, unreachable)
 	if err != nil {
 		if opts.StrictErrors {
-			return err
+			return nil, err
 		}
 		logger.Warn("partial result: chain reachability check failed", "pr", pr.GetNumber(), "error", err)
 	}
 	var fpDangling []*github.RepositoryCommit
 	for _, c := range forcePushed {
-		dangling, err := checkCommitDangling(ctx, g, repo, c, opts, unreachableSHAs)
+		dangling, err := checkCommitDangling(ctx, g, repo, c, opts, unreachable)
 		if err != nil {
-			return fmt.Errorf("check commit reachability for %s: %w", c.GetSHA(), err)
+			return nil, fmt.Errorf("check commit reachability for %s: %w", c.GetSHA(), err)
 		}
 		if dangling {
 			fpDangling = append(fpDangling, c)
 		}
 	}
-	combined := append(chainDangling, fpDangling...)
-	if len(combined) == 0 {
-		return nil
-	}
-	return visit(pr, combined)
+	return append(chainDangling, fpDangling...), nil
 }
 
 // danglingCommitVisitor is invoked for each PR with the confirmed dangling
@@ -609,11 +659,16 @@ type danglingCommitVisitor func(pr *github.PullRequest, commits []*github.Reposi
 // reachability shortcuts, and invokes visit for each PR that has at least one
 // confirmed dangling commit. It is the shared driver behind FindDanglingCommits
 // and FindDanglingBlobs.
+//
+// PRs are inspected concurrently (see DanglingOptions.PRConcurrency), but visit
+// is always called sequentially in the input PR order so that output stays
+// deterministic. PRs that completed before an error occurred are still visited,
+// so an interrupted run reports partial results.
 func iterateDanglingCommits(ctx context.Context, g *GitHubClient, repo repository.Repository, prs []*github.PullRequest, opts DanglingOptions, visit danglingCommitVisitor) error {
-	// unreachableSHAs accumulates commit SHAs confirmed unreachable from any ref.
+	// unreachable accumulates commit SHAs confirmed unreachable from any ref.
 	// It is shared across PRs because reachability is a property of the commit
 	// object itself, not of any individual PR.
-	unreachableSHAs := make(map[string]bool)
+	unreachable := newUnreachableSet()
 
 	var cache *prCache
 	if opts.ClearCache {
@@ -623,133 +678,165 @@ func iterateDanglingCommits(ctx context.Context, g *GitHubClient, repo repositor
 		cache = newPRCache(repo)
 	}
 
+	// Results are indexed by PR position so that visit can be replayed in input
+	// order once every worker has finished.
+	results := make([][]*github.RepositoryCommit, len(prs))
+	var completed atomic.Int64
+
+	eg, egCtx := errgroup.WithContext(ctx)
+	eg.SetLimit(opts.prConcurrency())
 	for i, pr := range prs {
-		if err := ctx.Err(); err != nil {
-			return err
-		}
-		logger.Debug("checking PR", "progress", fmt.Sprintf("%d/%d", i+1, len(prs)), "pr", pr.GetNumber(), "title", pr.GetTitle())
-
-		// Skip merged PRs that have all detection methods disabled.
-		if pr.MergedAt != nil && opts.DisableSquashRebase && opts.DisableForcePush {
-			logger.Debug("skipping merged PR: all merged-PR methods disabled", "pr", pr.GetNumber())
-			continue
-		}
-
-		headSHA := prHeadSHA(pr)
-		chainEnabled := (pr.MergedAt != nil && !opts.DisableSquashRebase) ||
-			(pr.MergedAt == nil && !opts.DisableClosed)
-		fpEnabled := !opts.DisableForcePush
-
-		// Initialize candidates; these may be pre-populated from cache below.
-		// needChain/needFP track which collections still require a live API call.
-		var chain []*github.RepositoryCommit
-		var forcePushed []*github.RepositoryCommit
-		var chainFailed, fpFailed bool
-		needChain := chainEnabled
-		needFP := fpEnabled
-
-		// cachedEntry holds the previously stored entry for this PR, if any.
-		// It is kept in scope so that partial re-collection can merge back the
-		// scopes that were not re-fetched, preventing a write that would
-		// overwrite valid cached data with a nil slice.
-		var cachedEntry *prCacheEntry
-		if headSHA != "" {
-			if loaded := cache.load(pr.GetNumber(), headSHA); loaded != nil {
-				cachedEntry = loaded
-				// Pre-populate from cache for each collection scope that was covered.
-				// A scope not covered by the cache still requires a live API call below.
-				if !chainEnabled || cachedEntry.ChainCollected {
-					if chainEnabled {
-						chain = reconstruct(cachedEntry.ChainCommits)
-					}
-					needChain = false
-				}
-				if !fpEnabled || cachedEntry.ForcePushCollected {
-					if fpEnabled {
-						forcePushed = reconstruct(cachedEntry.ForcePushCommits)
-					}
-					needFP = false
-				}
-				if !needChain && !needFP {
-					logger.Debug("pr cache hit", "pr", pr.GetNumber())
-				} else {
-					logger.Debug("pr cache partial hit: re-collecting missing data", "pr", pr.GetNumber(),
-						"need_chain", needChain, "need_fp", needFP)
-				}
-			}
-		}
-
-		// Collect only the data not already loaded from cache.
-		// Chain and force-push lookups are independent; run them concurrently.
-		// errgroup.WithContext ensures that if either goroutine returns a fatal
-		// error the derived context is canceled so the other goroutine stops
-		// making further API calls. Wait() guarantees no in-flight work continues
-		// after this block exits.
-		if needChain || needFP {
-			collEG, collCtx := errgroup.WithContext(ctx)
-			if needChain {
-				collEG.Go(func() error {
-					c, err := listCandidatesForPR(collCtx, g, repo, pr, opts)
-					if err != nil {
-						if opts.StrictErrors {
-							return err
-						}
-						logger.Warn("partial result: chain collection failed (lenient mode)", "pr", pr.GetNumber(), "error", err)
-						chainFailed = true
-						return nil
-					}
-					chain = c
-					return nil
-				})
-			}
-			if needFP {
-				collEG.Go(func() error {
-					fp, err := listForcePushedOutPRCommits(collCtx, g, repo, pr.GetNumber(), opts)
-					if err != nil {
-						if opts.StrictErrors {
-							return err
-						}
-						logger.Debug("skipping force-push based commit collection", "pr", pr.GetNumber(), "error", err)
-						fpFailed = true
-						return nil
-					}
-					forcePushed = fp
-					return nil
-				})
-			}
-			if err := collEG.Wait(); err != nil {
+		eg.Go(func() error {
+			// StrictErrors propagates the first failure through egCtx, which stops
+			// the remaining workers from issuing further API calls.
+			if err := egCtx.Err(); err != nil {
 				return err
 			}
-
-			// Persist only when new data was fetched (partial or full cache miss).
-			// chainCollected/fpCollected flags in the entry tell future runs whether
-			// each collection was both enabled and successful.
-			// When a scope is disabled for this run, restore it from the existing
-			// cached entry so the write does not erase previously collected data.
-			if headSHA != "" {
-				saveChain, saveChainCollected := chain, chainEnabled && !chainFailed
-				saveFP, saveFPCollected := forcePushed, fpEnabled && !fpFailed
-				if !chainEnabled && cachedEntry != nil {
-					saveChain = reconstruct(cachedEntry.ChainCommits)
-					saveChainCollected = cachedEntry.ChainCollected
-				}
-				if !fpEnabled && cachedEntry != nil {
-					saveFP = reconstruct(cachedEntry.ForcePushCommits)
-					saveFPCollected = cachedEntry.ForcePushCollected
-				}
-				cache.save(pr.GetNumber(), headSHA, saveChain, saveFP, saveChainCollected, saveFPCollected)
+			defer func() {
+				logger.Debug("checked PR", "progress", fmt.Sprintf("%d/%d", completed.Add(1), len(prs)), "pr", pr.GetNumber(), "title", pr.GetTitle())
+			}()
+			commits, err := processPR(egCtx, g, repo, pr, opts, cache, unreachable)
+			if err != nil {
+				return err
 			}
-		}
+			results[i] = commits
+			return nil
+		})
+	}
+	err := eg.Wait()
 
-		if len(chain) == 0 && len(forcePushed) == 0 {
+	for i, commits := range results {
+		if len(commits) == 0 {
 			continue
 		}
-
-		if err := processPRCandidates(ctx, g, repo, pr, chain, forcePushed, opts, unreachableSHAs, visit); err != nil {
-			return err
+		if visitErr := visit(prs[i], commits); visitErr != nil {
+			return visitErr
 		}
 	}
-	return nil
+	return err
+}
+
+// processPR collects the candidate commits of a single PR, from cache or from
+// the GitHub API, and returns the subset confirmed dangling. It is the unit of
+// work executed concurrently by iterateDanglingCommits.
+func processPR(ctx context.Context, g *GitHubClient, repo repository.Repository, pr *github.PullRequest, opts DanglingOptions, cache *prCache, unreachable *unreachableSet) ([]*github.RepositoryCommit, error) {
+	// Skip merged PRs that have all detection methods disabled.
+	if pr.MergedAt != nil && opts.DisableSquashRebase && opts.DisableForcePush {
+		logger.Debug("skipping merged PR: all merged-PR methods disabled", "pr", pr.GetNumber())
+		return nil, nil
+	}
+
+	headSHA := prHeadSHA(pr)
+	chainEnabled := (pr.MergedAt != nil && !opts.DisableSquashRebase) ||
+		(pr.MergedAt == nil && !opts.DisableClosed)
+	fpEnabled := !opts.DisableForcePush
+
+	// Initialize candidates; these may be pre-populated from cache below.
+	// needChain/needFP track which collections still require a live API call.
+	var chain []*github.RepositoryCommit
+	var forcePushed []*github.RepositoryCommit
+	var chainFailed, fpFailed bool
+	needChain := chainEnabled
+	needFP := fpEnabled
+
+	// cachedEntry holds the previously stored entry for this PR, if any.
+	// It is kept in scope so that partial re-collection can merge back the
+	// scopes that were not re-fetched, preventing a write that would
+	// overwrite valid cached data with a nil slice.
+	var cachedEntry *prCacheEntry
+	if headSHA != "" {
+		if loaded := cache.load(pr.GetNumber(), headSHA); loaded != nil {
+			cachedEntry = loaded
+			// Pre-populate from cache for each collection scope that was covered.
+			// A scope not covered by the cache still requires a live API call below.
+			if !chainEnabled || cachedEntry.ChainCollected {
+				if chainEnabled {
+					chain = reconstruct(cachedEntry.ChainCommits)
+				}
+				needChain = false
+			}
+			if !fpEnabled || cachedEntry.ForcePushCollected {
+				if fpEnabled {
+					forcePushed = reconstruct(cachedEntry.ForcePushCommits)
+				}
+				needFP = false
+			}
+			if !needChain && !needFP {
+				logger.Debug("pr cache hit", "pr", pr.GetNumber())
+			} else {
+				logger.Debug("pr cache partial hit: re-collecting missing data", "pr", pr.GetNumber(),
+					"need_chain", needChain, "need_fp", needFP)
+			}
+		}
+	}
+
+	// Collect only the data not already loaded from cache.
+	// Chain and force-push lookups are independent; run them concurrently.
+	// errgroup.WithContext ensures that if either goroutine returns a fatal
+	// error the derived context is canceled so the other goroutine stops
+	// making further API calls. Wait() guarantees no in-flight work continues
+	// after this block exits.
+	if needChain || needFP {
+		collEG, collCtx := errgroup.WithContext(ctx)
+		if needChain {
+			collEG.Go(func() error {
+				c, err := listCandidatesForPR(collCtx, g, repo, pr, opts)
+				if err != nil {
+					if opts.StrictErrors {
+						return err
+					}
+					logger.Warn("partial result: chain collection failed (lenient mode)", "pr", pr.GetNumber(), "error", err)
+					chainFailed = true
+					return nil
+				}
+				chain = c
+				return nil
+			})
+		}
+		if needFP {
+			collEG.Go(func() error {
+				fp, err := listForcePushedOutPRCommits(collCtx, g, repo, pr.GetNumber(), opts)
+				if err != nil {
+					if opts.StrictErrors {
+						return err
+					}
+					logger.Debug("skipping force-push based commit collection", "pr", pr.GetNumber(), "error", err)
+					fpFailed = true
+					return nil
+				}
+				forcePushed = fp
+				return nil
+			})
+		}
+		if err := collEG.Wait(); err != nil {
+			return nil, err
+		}
+
+		// Persist only when new data was fetched (partial or full cache miss).
+		// chainCollected/fpCollected flags in the entry tell future runs whether
+		// each collection was both enabled and successful.
+		// When a scope is disabled for this run, restore it from the existing
+		// cached entry so the write does not erase previously collected data.
+		if headSHA != "" {
+			saveChain, saveChainCollected := chain, chainEnabled && !chainFailed
+			saveFP, saveFPCollected := forcePushed, fpEnabled && !fpFailed
+			if !chainEnabled && cachedEntry != nil {
+				saveChain = reconstruct(cachedEntry.ChainCommits)
+				saveChainCollected = cachedEntry.ChainCollected
+			}
+			if !fpEnabled && cachedEntry != nil {
+				saveFP = reconstruct(cachedEntry.ForcePushCommits)
+				saveFPCollected = cachedEntry.ForcePushCollected
+			}
+			cache.save(pr.GetNumber(), headSHA, saveChain, saveFP, saveChainCollected, saveFPCollected)
+		}
+	}
+
+	if len(chain) == 0 && len(forcePushed) == 0 {
+		return nil, nil
+	}
+
+	return processPRCandidates(ctx, g, repo, pr, chain, forcePushed, opts, unreachable)
 }
 
 // FindDanglingCommits finds commits that are not reachable from any normal branch

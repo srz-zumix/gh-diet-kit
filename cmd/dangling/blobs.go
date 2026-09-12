@@ -34,6 +34,7 @@ func NewBlobsCmd() *cobra.Command {
 	var clearCacheFlag bool
 	var clearGitCacheFlag bool
 	var concurrencyFlag int
+	var prConcurrencyFlag int
 	var exporter cmdutil.Exporter
 
 	cmd := &cobra.Command{
@@ -107,6 +108,7 @@ Output fields: SHA, PATH, SIZE, COMMIT_SHA, PR_NUMBER, PR_URL`,
 				NoCache:                noCacheFlag,
 				ClearCache:             clearCacheFlag,
 				CommitFetchConcurrency: concurrencyFlag,
+				PRConcurrency:          prConcurrencyFlag,
 			}
 
 			logger.Info("inspecting PRs for dangling blobs", "total", len(prList))
@@ -152,6 +154,7 @@ Output fields: SHA, PATH, SIZE, COMMIT_SHA, PR_NUMBER, PR_URL`,
 	f.BoolVar(&clearCacheFlag, "clear-cache", false, "Clear the per-PR and commit blob cache before running, then use cache normally")
 	f.BoolVar(&clearGitCacheFlag, "clear-git-cache", false, "Clear the git bare clone cache and re-clone before running")
 	f.IntVar(&concurrencyFlag, "concurrency", 0, "Maximum number of concurrent GitHub API calls per PR for commit blob fetches (<=0 uses the package default)")
+	f.IntVar(&prConcurrencyFlag, "pr-concurrency", 0, "Maximum number of PRs inspected concurrently (<=0 uses the default of 4); higher values are faster but risk GitHub secondary rate limits")
 	cmdutil.StringEnumFlag(cmd, &sortFlag, "sort", "", "", []string{"size", "path", "pr_number"}, "Sort by field")
 	cmdutil.StringEnumFlag(cmd, &orderFlag, "order", "", "asc", []string{"asc", "desc"}, "Sort order")
 	cmdutil.AddFormatFlags(cmd, &exporter)

@@ -146,7 +146,7 @@ func (c *prCache) save(prNumber int, headSHA string, chain []*github.RepositoryC
 		return
 	}
 	p := c.cachePath(prNumber, headSHA)
-	if err := os.WriteFile(p, data, 0o644); err != nil {
+	if err := writeFileAtomic(p, data, 0o644); err != nil {
 		logger.Warn("pr cache: failed to write entry", "path", p, "error", err)
 	}
 }

@@ -33,7 +33,7 @@ commands:
       - name: --clear-git-cache
         description: Clear the git bare clone cache and re-clone before running (default: false)
       - name: --concurrency
-        description: Maximum number of concurrent GitHub API calls per PR for commit blob fetches; <=0 uses the package default of 5 (default: 0)
+        description: Maximum number of concurrent GitHub API calls per PR for commit blob fetches; <=0 uses the package default of 10 (default: 0)
       - name: --format
         description: Output format (json)
       - name: --jq
@@ -53,6 +53,8 @@ commands:
         description: Sort order (asc or desc, default asc)
       - name: --pr
         description: PR numbers to inspect, comma-separated or repeated (default: all closed PRs)
+      - name: --pr-concurrency
+        description: "Maximum number of PRs inspected concurrently; <=0 uses the default of 4 (default: 0). Higher values speed up large repositories but increase the risk of hitting GitHub's secondary rate limit. Output order is unaffected."
       - name: --reachability-check
         description: "Filter out blobs reachable from a local ref (requires git fetch --all --tags). Options: none (no verification, default), local-object (local git object store). Default: none. Note: git fetch --all alone does not fetch tags unreachable from any branch. When --repo is specified, a bare clone cache is auto-created under the OS user cache directory (e.g. ~/.cache/gh-diet-kit/ on Linux)."
       - name: --repo
@@ -103,7 +105,7 @@ commands:
       - name: --clear-git-cache
         description: Clear the git bare clone cache and re-clone before running (default: false)
       - name: --concurrency
-        description: Maximum number of concurrent GitHub API calls per PR for commit blob fetches; <=0 uses the package default of 5 (default: 0)
+        description: Maximum number of concurrent GitHub API calls per PR for commit blob fetches; <=0 uses the package default of 10 (default: 0)
       - name: --format
         description: Output format (json)
       - name: --jq
@@ -111,6 +113,8 @@ commands:
         description: Filter JSON output using a jq expression
       - name: --limit
         description: Maximum number of closed PRs to inspect (default: unlimited, ignored when --pr is specified)
+      - name: --no-blob-size
+        description: Skip blob size computation; SIZE will be empty in output, which significantly reduces the number of API calls (default: false)
       - name: --no-cache
         description: Disable per-PR result cache; always re-process all PRs (does not clear existing cache entries) (default: false)
       - name: --no-closed
@@ -123,6 +127,8 @@ commands:
         description: Sort order (asc or desc, default asc)
       - name: --pr
         description: PR numbers to inspect, comma-separated or repeated (default: all closed PRs)
+      - name: --pr-concurrency
+        description: "Maximum number of PRs inspected concurrently; <=0 uses the default of 4 (default: 0). Higher values speed up large repositories but increase the risk of hitting GitHub's secondary rate limit. Output order is unaffected."
       - name: --reachability-check
         description: "Verify candidates are truly unreachable. Options: none (no verification, default), default-branch (check against default branch only), branches (all branches), refs (all refs), local-object (local git object store), local-refs (local refs). Default: none. When --repo is specified, a bare clone cache is auto-created under the OS user cache directory (e.g. ~/.cache/gh-diet-kit/ on Linux)."
       - name: --repo
