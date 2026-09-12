@@ -3,6 +3,7 @@ package dangling
 import (
 	"cmp"
 	"context"
+	"errors"
 	"fmt"
 	"slices"
 	"strings"
@@ -662,8 +663,10 @@ type danglingCommitVisitor func(pr *github.PullRequest, commits []*github.Reposi
 //
 // PRs are inspected concurrently (see DanglingOptions.PRConcurrency), but visit
 // is always called sequentially in the input PR order so that output stays
-// deterministic. PRs that completed before an error occurred are still visited,
-// so an interrupted run reports partial results.
+// deterministic. If a worker fails with a non-cancellation error (e.g. under
+// StrictErrors), the error is returned before any visiting so no further API
+// calls are made. On cancellation, PRs that completed beforehand are still
+// visited, so an interrupted run reports best-effort partial results.
 func iterateDanglingCommits(ctx context.Context, g *GitHubClient, repo repository.Repository, prs []*github.PullRequest, opts DanglingOptions, visit danglingCommitVisitor) error {
 	// unreachable accumulates commit SHAs confirmed unreachable from any ref.
 	// It is shared across PRs because reachability is a property of the commit
@@ -704,6 +707,15 @@ func iterateDanglingCommits(ctx context.Context, g *GitHubClient, repo repositor
 		})
 	}
 	err := eg.Wait()
+
+	// On a fatal error other than cancellation (e.g. StrictErrors surfacing an
+	// API failure) the caller discards partial results, so skip the visit loop
+	// entirely to avoid issuing further expensive per-commit API calls after the
+	// first failure. Cancellation still falls through so that any PRs already
+	// completed can be reported as best-effort partial results.
+	if err != nil && !errors.Is(err, context.Canceled) {
+		return err
+	}
 
 	for i, commits := range results {
 		if len(commits) == 0 {
