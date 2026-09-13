@@ -10,7 +10,7 @@ require (
 	github.com/playwright-community/playwright-go v0.5700.1
 	github.com/spf13/cobra v1.10.2
 	github.com/srz-zumix/go-gh-extension v0.6.14
-	golang.org/x/sync v0.22.0
+	golang.org/x/sync v0.23.0
 )
 
 require (
