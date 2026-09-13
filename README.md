@@ -61,7 +61,7 @@ gh diet-kit dangling blobs [flags]
 | ------ | ----------- | ------- | ------------- |
 | `--clear-cache` | | `false` | Clear the per-PR and commit blob cache before running, then use cache normally |
 | `--clear-git-cache` | | `false` | Clear the git bare clone cache and re-clone before running |
-| `--concurrency` | | `0` | Maximum number of concurrent GitHub API calls per PR for commit blob fetches (`<=0` uses the package default of 5) |
+| `--concurrency` | | `0` | Maximum number of concurrent GitHub API calls per PR for commit blob fetches (`<=0` uses the package default of 10) |
 | `--format` | | table | Output format: `json` |
 | `--jq` | `-q` | | Filter JSON output using a jq expression |
 | `--limit` | | unlimited | Maximum number of closed PRs to inspect (ignored when `--pr` is specified) |
@@ -71,6 +71,7 @@ gh diet-kit dangling blobs [flags]
 | `--no-squash-merge` | | `false` | Disable squash/rebase merged PR blob detection. Previously cached data for this scope is preserved in the cache when this flag is set. |
 | `--order` | | `asc` | Sort order: `asc` or `desc` |
 | `--pr` | | all closed PRs | PR numbers to inspect (comma-separated or repeated, e.g. `--pr 1,2` or `--pr 1 --pr 2`) |
+| `--pr-concurrency` | | `0` | Maximum number of PRs inspected concurrently (`<=0` uses the default of 4). Higher values are faster on large repositories but increase the risk of hitting GitHub's secondary rate limit. Output order is unaffected. |
 | `--reachability-check` | | `none` | Filter out blobs reachable from a local ref (requires `git fetch --all --tags`): `none`, `local-object` |
 | `--repo` | `-R` | current repository | Repository in `[HOST/]OWNER/REPO` format |
 | `--sort` | | | Sort by field: `size`, `path`, `pr_number` |
@@ -117,16 +118,18 @@ gh diet-kit dangling commits [flags]
 | ------ | ----------- | ------- | ------------- |
 | `--clear-cache` | | `false` | Clear the per-PR and commit blob cache before running, then use cache normally |
 | `--clear-git-cache` | | `false` | Clear the git bare clone cache and re-clone before running |
-| `--concurrency` | | `0` | Maximum number of concurrent GitHub API calls per PR for commit blob fetches (`<=0` uses the package default of 5) |
+| `--concurrency` | | `0` | Maximum number of concurrent GitHub API calls per PR for commit blob fetches (`<=0` uses the package default of 10) |
 | `--format` | | table | Output format: `json` |
 | `--jq` | `-q` | | Filter JSON output using a jq expression |
 | `--limit` | | unlimited | Maximum number of closed PRs to inspect (ignored when `--pr` is specified) |
+| `--no-blob-size` | | `false` | Skip blob size computation; `SIZE` will be empty in output (reduces API calls significantly) |
 | `--no-cache` | | `false` | Disable per-PR result cache; always re-process all PRs (does not clear existing cache entries) |
 | `--no-closed` | | `false` | Disable closed unmerged PR detection. Previously cached data for this scope is preserved in the cache when this flag is set. |
 | `--no-force-push` | | `false` | Disable force-push dropped commit detection. Previously cached data for this scope is preserved in the cache when this flag is set. |
 | `--no-squash-merge` | | `false` | Disable squash/rebase merged PR commit detection. Previously cached data for this scope is preserved in the cache when this flag is set. |
 | `--order` | | `asc` | Sort order: `asc` or `desc` |
 | `--pr` | | all closed PRs | PR numbers to inspect (comma-separated or repeated, e.g. `--pr 1,2` or `--pr 1 --pr 2`) |
+| `--pr-concurrency` | | `0` | Maximum number of PRs inspected concurrently (`<=0` uses the default of 4). Higher values are faster on large repositories but increase the risk of hitting GitHub's secondary rate limit. Output order is unaffected. |
 | `--reachability-check` | | `none` | Verify candidates are truly unreachable: `none`, `default-branch`, `branches`, `refs`, `local-object`, `local-refs` |
 | `--repo` | `-R` | current repository | Repository in `[HOST/]OWNER/REPO` format |
 | `--sort` | | | Sort by field: `size`, `pr_number` |
