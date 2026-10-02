@@ -9,7 +9,7 @@ require (
 	github.com/google/go-github/v90 v90.0.0
 	github.com/playwright-community/playwright-go v0.5700.1
 	github.com/spf13/cobra v1.10.2
-	github.com/srz-zumix/go-gh-extension v0.6.14
+	github.com/srz-zumix/go-gh-extension v0.6.18
 	golang.org/x/sync v0.23.0
 )
 
@@ -87,10 +87,10 @@ require (
 	github.com/stretchr/testify v1.12.0 // indirect
 	github.com/thlib/go-timezone-local v0.0.6 // indirect
 	github.com/xo/terminfo v0.0.0-20220910002029-abceb7e1c41e // indirect
-	golang.org/x/crypto v0.55.0 // indirect
-	golang.org/x/mod v0.38.0 // indirect
-	golang.org/x/sys v0.47.0 // indirect
-	golang.org/x/term v0.45.0 // indirect
-	golang.org/x/text v0.41.0 // indirect
+	golang.org/x/crypto v0.57.0 // indirect
+	golang.org/x/mod v0.41.0 // indirect
+	golang.org/x/sys v0.48.0 // indirect
+	golang.org/x/term v0.46.0 // indirect
+	golang.org/x/text v0.42.0 // indirect
 	gopkg.in/yaml.v3 v3.0.1 // indirect
 )
