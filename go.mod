@@ -9,7 +9,7 @@ require (
 	github.com/google/go-github/v93 v93.0.0
 	github.com/playwright-community/playwright-go v0.5700.1
 	github.com/spf13/cobra v1.10.2
-	github.com/srz-zumix/go-gh-extension v0.7.1
+	github.com/srz-zumix/go-gh-extension v0.7.6
 	golang.org/x/sync v0.24.0
 )
 
